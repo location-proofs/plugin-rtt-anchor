@@ -1,0 +1,12 @@
+# Attester public keys this anchor will answer, one hex-encoded Ed25519 key per
+# line. Get a key with `attester -print-key`.
+#
+# Blank lines and anything after a '#' are ignored. A trailing label after the
+# key is ignored too, and is the sane way to remember whose key this is.
+#
+# The anchor re-reads this file every 30s, so adding a line enrolls a machine
+# without a restart. Removing a line is the only revocation mechanism there is.
+#
+# An empty or missing file means the anchor answers nobody.
+
+# 469b6259aeb3bd7dc3700162b29b0906a15177536a27099a1c1a2aec17bbcc8e   gpu-node-1

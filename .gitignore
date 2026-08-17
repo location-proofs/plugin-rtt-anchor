@@ -1,0 +1,17 @@
+# Private key material. Anchors and attesters generate these on first run, in
+# the working directory by default, so an unguarded `git add` would publish a
+# signing key. Never relax this.
+*-key.json
+*.pem
+*.key
+
+# Operator config, environment-specific.
+allowlist.txt
+
+# Built binaries.
+/anchor
+/attester
+*.test
+
+# Local evidence output.
+*.jsonl
