@@ -3,19 +3,38 @@
 ## Topology
 
 ```
-        anchor (London)  ─┐
-        anchor (Frankfurt)─┼──── UDP 8924 ────►  attester  (the GPU node)
-        anchor (Amsterdam)─┘                         │
-                                                     │ -json -raw
-                                                     ▼
-                                              local evidence store
-                                                     │
-                                                     ▼
-                                          verifier / policy evaluation
+   ┌─────────────── inside the facility ────────────────┐
+   │                                                    │
+   │   attester (the GPU node)                          │
+   │        │  -json -raw                               │
+   │        ▼                                           │
+   │   evidence store ──► verifier ──► posterior π      │
+   │   (signed receipts)                    │           │
+   └────────────────────────────────────────┼───────────┘
+            ▲     ▲     ▲                   │
+            │     │     │              query: "inside F
+      UDP 8924    │     │               during T?"
+            │     │     │                   │
+            │     │     │                   ▼
+      anchor(LON) │  anchor(AMS)     answer leaves; evidence does not
+              anchor(FRA)
 ```
 
 Anchors are the only hosts that need to be reachable. The attester initiates
 every exchange, so it works from behind NAT without inbound rules.
+
+**The evidence store belongs in the facility, and it stores receipts rather than
+conclusions.** Receipts are signed, compact, and independently checkable years
+later; a computed posterior bakes in today's propagation model, prior and threat
+model, none of which are settled. Keeping the raw receipts means a measurement
+taken this month can be re-evaluated under next month's better model.
+
+This is also what makes containment demonstrable. Evidence accumulates locally
+and continuously; a challenge arrives occasionally; the posterior is computed
+in-facility and queried; only the answer crosses the boundary. Note the honest
+limit — each anchor still learns that a given key probed it and roughly how far
+away it was. In-facility storage controls where the composite picture lives, not
+what an individual anchor observes.
 
 That direction matters more than it looks. A datacenter that refuses inbound
 traffic — the common case, and one of the flagged risks for the lab cluster —

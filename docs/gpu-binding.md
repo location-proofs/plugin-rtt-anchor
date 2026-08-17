@@ -6,6 +6,33 @@ workable construction is, and what it still leaves open.
 
 This is the open problem. Nothing in this repository solves it.
 
+## Why this is the whole problem
+
+One sentence explains why hardware binding is not an optional hardening step but
+the load-bearing part of the design:
+
+> **You cannot beat the bound with the network, only by moving the key.**
+
+Every network-layer manipulation — tunnels, proxies, congestion, deliberate
+queueing — *adds* delay. Added delay makes a machine appear further away, never
+nearer. No amount of network trickery lets an attacker claim to be closer to an
+anchor than it really is.
+
+The only way to produce a round trip shorter than physics allows for the real
+machine is for something genuinely near that anchor to hold the signing key and
+answer. That is not a network attack. It is key sharing.
+
+This decides what the geometry can and cannot do. A verifier checking that its
+radii intersect will catch an attacker who has planted key-holding responders
+near *several* anchors, because their claims are mutually unsatisfiable. It will
+**not** catch a single relocated key: one machine near anchor A answering every
+probe looks exactly like a machine near anchor A, and every receipt along the way
+is valid and correctly signed.
+
+So the measurement layer can detect distributed key sharing. Nothing in it can
+detect a key that has simply moved. Closing that gap is what hardware binding is
+for, and there is no substitute for it lower in the stack.
+
 ## Why you cannot sign probes with an on-die key
 
 The instinct is to have the GPU itself sign the challenge, so the signature is

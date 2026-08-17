@@ -1,63 +1,76 @@
 # plugin-rtt-anchor
 
-Round-trip-time location evidence, extracted from DoubleZero's RFC-16 protocol
-with the blockchain removed.
+A **stamp generator** for round-trip-time location evidence, extracted from
+DoubleZero's RFC-16 protocol with the blockchain removed.
 
-Two binaries. An **anchor** runs somewhere you know the location of and
-challenges machines to prove how far away they are. An **attester** runs on the
-machine in question and answers. The result is a signed statement bounding how
-far the attester can possibly be from the anchor.
+Two binaries. An **anchor** runs at a location you know and challenges machines
+to demonstrate how far away they are. An **attester** runs on the machine in
+question and answers. Each exchange produces a signed observation: an anchor's
+attestation of a round-trip time it measured on its own clock.
 
-Built to answer a narrow question for compute governance: can we get a
-timing-based bound on where a GPU node physically is, without trusting its
-operator's word for it?
+It produces evidence. It does not compute locations, and its output should not
+be read as an answer to "where is this machine".
 
-## The three roles
+Built for compute governance: getting timing-based evidence about where a GPU
+node physically is, without trusting its operator's word for it.
 
-Vocabulary follows the [sovereignty certificate
-spec](docs/sovcert-mapping.md), so this slots into that pipeline without a
-translation layer.
+## Roles
+
+Naming follows the [Sovereignty Certificate
+Specification](docs/sovcert-mapping.md), whose §3.1 and §3.2 define these terms.
 
 | Role | Runs where | Does what |
 |---|---|---|
 | **anchor** | a host at known coordinates | issues a random challenge, measures the round trip on its own clock, signs the result |
-| **attester** | the machine being located | echoes the challenge, signs it, collects the anchor's signed replies |
-| **verifier** | anywhere, later | re-checks the anchor's signature and decides what the timing implies |
+| **attester** | the machine being located | echoes the challenge, signs it, collects the anchor's signed receipts |
+| **verifier** | elsewhere, later | validates signatures, combines receipts from several anchors, computes a posterior |
+| **relying party** | elsewhere, later | applies a threshold and decides something |
 
-The direction of signing is the load-bearing part. The measured time rides
-inside the **anchor's** signature, so the attester cannot shrink its own
-provable envelope by reporting a smaller number. Run the attester with `-raw`
-and it emits the anchor-signed bytes verbatim, so a verifier can check them
-rather than trust the summary the attester prints.
+Only the first two are in this repo. That division is deliberate and load-bearing
+— see below.
 
-There is no verifier binary in this repo. That role belongs to the evaluation
-service downstream.
+The direction of signing matters. The measured time rides inside the **anchor's**
+signature, so an attester cannot shrink its own bound by reporting a smaller
+number. Run the attester with `-raw` and it emits the anchor-signed bytes
+verbatim, so a verifier checks the anchor's claim rather than the attester's
+summary of it.
 
-## What it proves, and what it does not
+## What a measurement means
 
-A measurement says: **the holder of key K was within R metres of (lat, lon) at
-time T**.
+One exchange establishes: **the holder of key K was no further than R metres
+from this anchor at this time**, where R is the round trip at vacuum light speed.
 
-Four limits, all of them load-bearing:
+Read that carefully, because it is weaker and stranger than it looks.
 
-**It bounds distance from above, never below.** Latency proves a machine is not
-*further* than R. It cannot prove it is not *nearer*, because anyone can add
-delay. One anchor gives you a disc, not a point. Three in different cities
-intersect to something useful; one answers a geofence question only when its
-whole disc falls inside the boundary.
+**It is a bound, not a position.** Latency cannot prove a machine is *near* — only
+that it is not *beyond* R. One anchor yields a disc. Several with good azimuth
+spread intersect into something useful.
+
+**The disc is not evenly filled.** The circle is the *support* of a likelihood,
+not its shape. Inside it, density follows where fiber actually runs and where
+machines actually are. Characterising that distribution properly is open
+research; treating the radius as if belief were smeared evenly across it is
+wrong.
+
+**Noise runs one way.** Queueing and routing only add delay, so measurements err
+towards *further away*, never nearer. Take minima over many samples, not means.
 
 **It locates a key, not hardware.** Nothing here binds K to a particular GPU.
-See [docs/gpu-binding.md](docs/gpu-binding.md) — that is the open problem, and
-the reason this exists.
+Worse, since the network can only ever inflate a measurement, moving the key is
+the *only* way to fake proximity — which makes hardware binding the load-bearing
+problem rather than a nice-to-have. See [gpu-binding.md](docs/gpu-binding.md).
 
-**The anchor's position is self-asserted.** Coordinates come from `-lat`/`-lon`.
-Upstream DoubleZero anchors them in an onchain device record attested by
-independent operators; that tier is deliberately cut. A proof is exactly as good
-as your trust in whoever runs the anchor.
+**The anchor's position is self-asserted.** Coordinates come from `-lat`/`-lng`.
+The specification expects an Endorser-signed anchor directory; this repo has no
+such thing, so a measurement is exactly as good as your trust in whoever runs the
+anchor.
 
-**Unchallenged mode proves much less.** With `-unchallenged` both probes are
-pre-signed and fired back to back, so nothing stops a relay near the anchor from
-answering on the real machine's behalf.
+**And no region ever reaches probability 1.** The evidence is ultimately a bit
+string, and nothing about a bit string intrinsically ties it to a place. Positions
+outside the light-speed bound are not impossible, merely require a broken anchor,
+a leaked key, or a forged signature. What you can state is conditional on a threat
+model — which is why the honest verb is "is consistent with", never "proves".
+[incongruities.md](docs/incongruities.md) works through the consequences.
 
 ## Quick start
 
@@ -80,8 +93,8 @@ On the machine being located, get its key and send it to the anchor operator:
 ./attester -print-key
 ```
 
-Add that to the anchor's `allowlist.txt` — one hex key per line, `#` comments
-and trailing labels allowed. The anchor re-reads it every 30s, so no restart:
+Add that to the anchor's `allowlist.txt` — one hex key per line, `#` comments and
+trailing labels allowed. The anchor re-reads it every 30s, so no restart:
 
 ```
 3d40...c1a9   gpu-node-3
@@ -104,20 +117,22 @@ Then measure:
   signatures:            reply0=valid reply1=valid anchor-key=valid
 ```
 
-Two distances, and the difference matters. The **provable bound** assumes vacuum
-c and holds whatever the medium — it is the only number to make a claim on. The
-**calibrated estimate** inverts a model of real fiber and is a best guess. A gap
-between them that closes unexpectedly is the signature of an unusually direct
-path, which is a thing a verifier should be suspicious of rather than pleased
-about.
+The two distances are operator conveniences, not results. The **provable bound**
+is a hard support boundary at vacuum c, and holds whatever the medium. The
+**calibrated estimate** inverts a fiber model whose constants are ordinary
+engineering figures pinned by no specification, and is a guess. Neither is a
+location. A verifier should recompute from the round-trip time under its own
+model rather than consume either number.
 
-`-json` emits one object per pair; add `-raw` to include the anchor-signed bytes.
+`-json` emits one object per pair; add `-raw` to include the anchor-signed bytes,
+which are the part that constitutes evidence.
 
 ## Documentation
 
-- [docs/protocol.md](docs/protocol.md) — the handshake, the wire format, why the challenge works
+- [docs/protocol.md](docs/protocol.md) — the handshake, the wire format, why the challenge is necessary
 - [docs/deployment.md](docs/deployment.md) — topology, host requirements, anchor siting, operations
-- [docs/sovcert-mapping.md](docs/sovcert-mapping.md) — how this maps onto the sovereignty certificate model, and what is not yet aligned
+- [docs/sovcert-mapping.md](docs/sovcert-mapping.md) — the roles this implements, conformance against the specification, and how output maps onto the evidence framework
+- [docs/incongruities.md](docs/incongruities.md) — open questions found while implementing, including where the specification and the framework disagree
 - [docs/gpu-binding.md](docs/gpu-binding.md) — binding a measurement to specific hardware, and why it cannot be done naively
 
 ## Rate limiting

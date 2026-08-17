@@ -3,6 +3,11 @@
 How a measurement is made, why the challenge is necessary, and what the bytes
 look like.
 
+A measurement produced here is an **observation**, not a location. It bounds how
+far the key holder could be from one anchor. Turning several such bounds into a
+belief about where something is belongs to the evidence function downstream —
+see [sovcert-mapping.md](sovcert-mapping.md).
+
 ## The problem the challenge solves
 
 A naive latency proof is trivially forged. Ask a machine "how long does a round
@@ -79,6 +84,38 @@ Note the direction of the error. Overhead makes the attester appear *further
 away*, never nearer. It costs precision but cannot manufacture a false "inside
 the fence" result. If you want it back, calibrate: measure your overhead and
 pass it as `-processing-delay`.
+
+## Which direction the nonce runs, and why it matters
+
+The Sovereignty Certificate Specification §7.1.3(b) puts the nonce the other way
+round: the receipt carries "the nonce or challenge value from the Attester's
+probe". This implementation does not conform, deliberately, and the two designs
+buy different things.
+
+An **attester-supplied** nonce proves receipt freshness — the anchor cannot have
+manufactured the receipt before the attester chose the nonce.
+
+An **anchor-supplied** nonce, as used here, proves causal ordering — the second
+probe cannot exist before the first reply was parsed, so the measured interval
+has real wire time as a floor. Without it, an attester pre-signs both probes,
+hands them to a relay next to the anchor, and the anchor faithfully measures and
+signs the relay's distance.
+
+A complete implementation should carry both; it costs one field. See
+[incongruities #1](incongruities.md).
+
+## The noise is one-sided, so take minima
+
+Queueing, scheduling and routing add delay. Nothing subtracts it. The
+distribution of measured RTT for a fixed true distance therefore has a hard edge
+on the near side at `2d/c` and a long tail on the far side.
+
+Two consequences. The **minimum** over many samples converges on true
+propagation time from above and is the estimator to use; the mean is biased and
+the bias grows with load. And an attacker can always inflate a measurement,
+never deflate one — which is why the network layer cannot manufacture proximity,
+and why the only route to appearing closer is moving the key. That argument is
+developed in [gpu-binding.md](gpu-binding.md).
 
 ## Wire format
 
