@@ -1,30 +1,51 @@
 // Package geo converts round-trip times into distances.
 //
-// Two conversions, and the difference between them is the point. The provable
-// bound assumes vacuum c and is sound whatever the medium carries the signal.
-// The calibrated estimate inverts a model of how real fiber behaves, and is
-// therefore only as good as that model -- it is biased low over an unusually
-// direct or fast path, which is exactly the case a verifier should be
-// suspicious of.
+// These are conveniences for operators reading terminal output. They are not
+// the authoritative computation: under the location-verification framework a
+// single measurement yields a likelihood over positions, and turning a set of
+// those into a posterior belongs to the evidence function, downstream and with
+// access to a prior. Nothing here should be quoted as a location.
 //
-// Constants match the sovereignty-certificate reference implementation
-// (src/sim/physics.ts) so distances computed here are comparable with the ones
-// that pipeline produces.
+// Two conversions, and the difference between them is the point.
+//
+// ProvableMaxDistance is a hard support boundary. Beyond it the likelihood is
+// not merely small -- producing a valid signature over the anchor's nonce from
+// outside that radius requires a broken anchor, a leaked key, or a forged
+// signature. It is a statement about cryptographic and physical impossibility,
+// not about measurement error. This is the only bound the sovereignty
+// certificate specification mandates: 3.6 requires "the speed of light in the
+// transmission medium (or a conservative upper bound thereof)", and vacuum c is
+// the conservative upper bound.
+//
+// CalibratedDistance is a model, not a bound. The specification pins no
+// propagation constants, so the two below come from ordinary telecom
+// engineering rather than from any normative source, and they are only as good
+// as the assumption that a link behaves typically. A path that is unusually
+// direct reads as closer than it is, which is exactly the case a verifier
+// should treat as suspicious rather than favourable.
+//
+// The distribution between those two figures is not uniform and not radial. It
+// follows where fiber actually runs and where machines actually are, and
+// characterising it is open research -- so the honest output of this package is
+// the hard boundary plus a clearly-labelled model, never a point estimate.
 package geo
 
 import "time"
 
 const (
 	// CVacuumMps is the speed of light in vacuum, m/s -- the exact SI
-	// definition.
+	// definition, and the basis of the support boundary.
 	CVacuumMps = 299_792_458.0
 
 	// FiberVelocityFactor is signal speed in single-mode fiber as a fraction
-	// of c.
+	// of c. Single-mode fiber has a refractive index near 1.47, giving roughly
+	// 0.68; 0.69 is a common engineering figure. Not normative anywhere.
 	FiberVelocityFactor = 0.69
 
 	// RouteFactor accounts for terrestrial fiber running longer than the
-	// great-circle distance between two points.
+	// great-circle distance, since cable follows rights of way rather than
+	// geodesics. Reported ratios vary widely by region; 1.25 is a conservative
+	// commonly-cited figure and is the weakest assumption in this package.
 	RouteFactor = 1.25
 )
 
