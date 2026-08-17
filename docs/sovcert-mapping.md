@@ -1,134 +1,152 @@
-# Mapping onto the sovereignty certificate model
+# Where this fits
 
-This repo produces RTT evidence. The sovereignty certificate pipeline consumes
-location evidence. This document says exactly how the two line up, and — more
-usefully — where they do not yet.
+Two documents govern how this code should be understood, and they are not the
+same document:
 
-Reference points are the sovcert spec and its TypeScript reference
-implementation (`sovcert-location-proof`), particularly `src/sim/anchors.ts`,
-`src/sim/physics.ts`, and `src/lp/interface.ts`.
+- **The Sovereignty Certificate Specification** (v0.1.0, Sovereignty
+  Certificates Working Group) — a normative standard. It defines the roles this
+  code implements and states requirements in SHALL/SHOULD language.
+- **The location verification framework** — a conceptual model for what location
+  evidence *is* and how belief about location should be represented.
 
-> **Caveat before you build on this.** The Astral `VERIFY-SPEC` is v0.1.0 and
-> marked Design Phase, and the residency plan that motivates this work
-> explicitly warns against treating a half-read spec as settled. The alignment
-> below is deliberately limited to the parts that are stable — vocabulary, units,
-> and physics. The stamp-emission layer is *not* implemented here, on purpose.
-> See "What is not aligned".
+This repo implements two roles from the specification. The framework is what
+tells you how to interpret the output. Where they disagree, and they do in
+places, see [incongruities.md](incongruities.md).
 
-## Vocabulary
+## What this repo is, in one line
 
-The naming in this repo was changed to match sovcert rather than DoubleZero,
-because the downstream consumer matters more than the upstream origin.
+A **stamp generator**. It produces signed observations. It does not compute
+locations, and it should not be read as doing so.
 
-| sovcert | here | DoubleZero (origin) |
+## Roles, per the specification
+
+The specification builds on RFC 9334 (RATS) and defines five roles. This repo
+implements the first two and nothing else.
+
+| Role | Spec | Here |
 |---|---|---|
-| anchor | `cmd/anchor` | geoprobe |
-| attester | `cmd/attester` | target / target-sender |
-| verifier | not implemented | client oracle |
-| anchor receipt | the signed reply packet | signed reply packet |
-| probe nonce | the 8-byte challenge | challenge nonce |
-| attester ephemeral key | the attester's Ed25519 key | target signing key |
+| **Anchor** | §3.1 — "computing entity at a known, fixed geographic location that participates in location measurement protocols by returning signed, timestamped receipts in response to probes from an attester" | `cmd/anchor` |
+| **Attester** | §3.2, RFC 9334 — the entity whose evidence must be appraised | `cmd/attester` |
+| **Verifier** | §3.10 — receives evidence, appraises it, computes location, issues a VAR | not implemented; downstream |
+| **Endorser** | §3.3 — root of trust for reference data; publishes the signed Anchor Directory | not implemented; see gaps |
+| **Relying Party** | §4.1.5 — consumes the certificate, makes authorization decisions | out of scope |
 
-## The structural agreement
+The naming in this codebase is the specification's own, not a local invention.
 
-The sovcert simulation's `AnchorReceipt` is:
+## What the specification asks of these two roles
 
-```ts
-{ anchor_id, probe_nonce, attester_key_thumbprint, rtt_s, t_rx }
-```
+**Anchor (§7.1).** Deployed in a physically secure facility with a stable, known
+network location (§7.1.1). Synchronised to a reliable time source (§7.1.2) —
+though note the spec's own caveat that RTT relies on local clock *stability*
+rather than absolute UTC. On receiving a valid probe, generate a receipt
+containing a high-precision timestamp, the challenge value, and a unique anchor
+identifier, signed with the anchor's private key (§7.1.3). Optionally
+participate in peer monitoring so a drifting or lying anchor is detected
+(§7.1.4).
 
-Every field has a counterpart in the reply packet this system produces:
+**Attester's Location Measurement Agent (§5.5).** Probe a set of trusted anchors
+using a protocol capable of precise RTT measurement — ICMP, UDP and QUIC are
+named (§5.5.1.1). Choose anchors to minimise geometric dilution of precision,
+prioritising proximity and azimuth spread (§5.5.1.2). Collect the signed receipt
+for each probe (§5.5.2.1) and validate its signature before including it
+(§5.5.2.2).
 
-| `AnchorReceipt` | reply packet |
+That last requirement is why `attester` verifies every reply rather than
+trusting the transport, and §5.5.1.2 is why [deployment.md](deployment.md)
+treats anchor siting as a geometry problem rather than a procurement one.
+
+## Conformance
+
+| Requirement | Status |
 |---|---|
-| `anchor_id` | `AnchorPubkey` |
-| `probe_nonce` | echoed inside `Probe.Sec`/`Probe.Frac` |
-| `attester_key_thumbprint` | `Probe.SenderPubkey` (the key itself, not a thumbprint) |
-| `rtt_s` | `SinceLastRxNs` |
-| `t_rx` | `ObservedAt` |
+| §5.5.1.1 — probe anchors over an RTT-capable protocol | Met. UDP. |
+| §5.5.2.1 — collect a signed receipt per probe | Met. |
+| §5.5.2.2 — validate receipt signatures before inclusion | Met. |
+| §7.1.3(c) — receipt carries a unique anchor identifier | Met. The anchor's public key. |
+| §7.1.3(b) — receipt carries the challenge from the attester's probe | **Not met.** The nonce runs the other way — see [incongruities #1](incongruities.md). |
+| §7.1.3(a) — receipt carries a high-precision timestamp of probe receipt | **Partial.** Carries a high-precision *interval* plus a coarser absolute time. |
+| §7.1.2 — anchor time synchronisation | Not enforced. No sync is needed for the interval; it matters for freshness and cross-anchor correlation. |
+| §7.1.4 — anchor peer monitoring | Not implemented. |
+| §5.3 — ephemeral key bound to a hardware root of trust | Not implemented. See [gpu-binding.md](gpu-binding.md). |
+| §5.6 — assemble receipts into a signed Evidence Envelope | Not implemented. Output is per-probe JSON. |
+| Annex A — EAT profile | Not implemented. |
+| §7.2 — Endorser-signed Anchor Directory | Not implemented. Anchor keys and coordinates come from flags. |
+| §6.x — everything in the Verifier role | Deliberately absent. Not this component's job. |
 
-More importantly the two agree on the design point that makes any of this worth
-doing. From `src/sim/anchors.ts`:
+The gaps divide cleanly. Most are "not built yet" — envelope assembly, the EAT
+profile, the directory. One is a genuine design disagreement about the nonce.
+The Verifier-side absences are correct rather than missing: §6.3 places
+multilateration, radius and confidence computation in the Verifier, and this
+repo should not be doing any of it.
 
-> Because `rtt_s` rides in this anchor-signed receipt, the attester cannot
-> shrink the provable envelope by self-reporting a smaller time.
+## How the output maps onto the framework
 
-That is exactly the property the challenge-response preserves here, and the
-reason `attester -raw` exists: it emits the anchor-signed bytes so a verifier
-checks the anchor's claim rather than the attester's summary of it.
+The framework's chain runs observables → stamps → evidence → assessment →
+decision. This repo covers the first two links.
 
-## Physics
+**Observable `O_i`** — one round-trip time, measured on the anchor's own clock
+between transmitting its reply and receiving the attester's follow-up probe. A
+duration, nothing more.
 
-`internal/geo/distance.go` uses the same constants as `src/sim/physics.ts`, so
-distances from the two systems are directly comparable:
+**Stamp `s_i = g_i(O_i)`** — the observation combined with the anchor's known
+coordinates and a propagation model, yielding a *likelihood over positions*: a
+hard support boundary at `c·rtt/2`, and inside it a non-uniform density that
+follows network topology. One stamp is one anchor's constraint. It is not a
+location and cannot become one on its own.
 
-| constant | value |
-|---|---|
-| vacuum c | 299,792,458 m/s |
-| fiber velocity factor | 0.69 |
-| route factor | 1.25 |
+**Evidence `E = {s_1 … s_m}`** — stamps from several anchors, ideally with good
+azimuth spread. Combining them is multilateration, which is the evidence
+function's job by definition, not the stamp generator's.
 
-Both compute the same two quantities: a **provable maximum** at vacuum c, sound
-whatever the medium, and a **calibrated estimate** that inverts the fiber model
-and is only as good as that model. The gap between them is the dark-fiber
-signal — an unusually direct path closes it, which is a reason for suspicion
-rather than confidence.
+**Assessment `A = (π, Q)`** — a spatiotemporal posterior and a vector of
+qualifiers. π depends on the evidence, the prior and the threat model — **not**
+on any claimed region. Nothing in this repo produces π.
 
-One difference worth noting. In the sovcert simulation the per-anchor processing
-delay is a published directory field, drawn from 200–800 µs. Here it is an
-operator-supplied `-processing-delay` flag defaulting to zero. Zero is the safe
-default because it can only overstate distance. The measured challenge overhead
-on a commodity VPS is about 92 µs, which is the right order of magnitude for
-that directory field and is real data rather than a drawn value.
+**Credibility `Pr[C|E,θ] = π(L × T)`** — the probability mass of π falling
+inside a region and time window. A *query against a stored posterior*, not a
+parameter of the assessment. Asking about a different region is another query,
+not a recomputation.
 
-## Units
+**Decision** — a threshold applied to that probability alongside the qualifiers,
+by whoever is deciding.
 
-Output field names and units follow sovcert — seconds, metres, `lat`/`lon` —
-rather than the nanoseconds and `lat`/`lng` the wire format uses internally.
-Nanosecond values are retained alongside, because that is the precision actually
-carried and rounding to seconds early would throw away the measurement.
+### Why the region stays out of the assessment
 
-## What is not aligned
+It is tempting to hand the evidence function the geofence and let it answer
+directly. Resist it. Evidence accumulates continuously and gets challenged
+occasionally, and the challenges are not knowable in advance: this month a
+jurisdiction, next month a specific facility, later a question nobody has
+thought of yet. Binding the assessment to a region means recomputing it per
+question and storing an artifact that answers only one.
 
-Three gaps, listed so nobody assumes otherwise.
+Keeping π free of the region gives you one posterior and unlimited cheap
+queries against it, and it puts a real architectural boundary between measuring
+where something is and comparing that against a reference geometry.
 
-**No `LocationStamp` emission.** The plugin interface expects a stamp with
-`lpVersion`, `locationType`, `location`, `srs`, `temporalFootprint`, `plugin`,
-`signals`, and `signatures`. This repo emits its own JSON. Producing a conformant
-stamp is a wrapper, not a rewrite, but it should be written against a settled
-spec version and probably belongs on the TypeScript side where the rest of the
-plugin machinery lives.
+### Where the platform quote goes
 
-**Different crypto stack.** sovcert uses ES256 with JWS/JWK and EAT claims. This
-uses raw Ed25519 over fixed-layout binary packets, inherited from DoubleZero.
-Bridging means either re-signing the evidence into a JWS at the plugin boundary,
-or teaching the verifier to check Ed25519 over the wire format. The second
-preserves the original anchor signature end to end and is therefore the stronger
-option, but it costs a verifier-side implementation of this wire format.
+The specification has the attester bundle a hardware quote alongside the
+location receipts (§5.4, §5.6). That quote is not a location stamp — it says
+nothing about where anything is. It belongs in **Q**: it raises the cost of
+forging the stamps by binding the signing key to measured hardware. It is trust
+in the evidence, not evidence about position.
 
-**No anchor directory.** sovcert has an endorser-signed directory publishing each
-anchor's id, public key, coordinates, and calibrated delay. Here each anchor
-asserts its own coordinates via a flag and the attester is handed a key on the
-command line. A directory is the natural next step and is what would let a
-verifier trust an anchor it has never spoken to.
+## The unit of storage
 
-**No confidence region.** A single anchor yields a disc. Turning several discs
-into a region — and a claim about whether a point lies inside a policy zone — is
-`src/region/` in sovcert, and belongs there rather than here. This repo's job is
-to produce sound per-anchor bounds; composing them is the verifier's.
+Store the **receipts**, not the posterior.
 
-## Suggested integration shape
+Receipts are signed, compact, and independently checkable years later. A
+posterior is derived — it depends on the propagation model, the prior and the
+threat model, all of which will improve. Storing π freezes today's modelling
+into an artifact you cannot revisit; storing receipts lets you recompute last
+month's measurements under next month's better model.
 
-The cheapest path that preserves the security property:
+This also lands the containment property naturally. Receipts accumulate inside
+the facility. A challenge arrives — "was this machine inside F during window
+T?" — the posterior is computed locally, the query runs against it, and the
+answer is the only thing that crosses the boundary.
 
-1. Attesters run against three or more anchors, emitting `-json -raw`.
-2. Something inside the facility collects those objects into a local store. It
-   needs no keys and makes no trust decisions — it is a spool.
-3. The verifier reads the store, checks each anchor's Ed25519 signature over the
-   raw reply, discards anything stale or unchallenged by policy, and converts
-   the surviving measurements into per-anchor discs.
-4. Region intersection and the policy predicate happen there, in the existing
-   sovcert code.
-
-The property worth protecting through all of this is that step 3 never trusts
-the attester or the spool. Everything it needs is inside an anchor signature.
+One honest caveat: each anchor unavoidably learns that a particular key probed
+it and roughly how far away it was. Keeping the evidence store in-facility
+controls where the composite picture lives, not what any individual anchor
+observes.
