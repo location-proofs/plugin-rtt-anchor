@@ -1,0 +1,768 @@
+package signed_test
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/binary"
+	"net"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/location-proofs/plugin-rtt-anchor/internal/signed"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestReflector_Linux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-specific test")
+	}
+
+	t.Run("echo with valid signature", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		reflectorPub, reflectorSigner := newTestSigner(t)
+		geoprobePub, _ := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+		var reflectorPubKey [32]byte
+		copy(reflectorPubKey[:], reflectorPub)
+		var geoprobePubKey [32]byte
+		copy(geoprobePubKey[:], geoprobePub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, geoprobePubKey, [][32]byte{senderPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		probe := signed.NewProbePacket(1, senderSigner)
+		var buf [signed.ProbePacketSize]byte
+		require.NoError(t, probe.Marshal(buf[:]))
+
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		n, err := conn.Read(replyBuf)
+		require.NoError(t, err)
+		assert.Equal(t, signed.MinReplyPacketSize, n)
+
+		reply, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+
+		assert.Equal(t, probe.Seq, reply.Probe.Seq)
+		assert.Equal(t, probe.Sec, reply.Probe.Sec)
+		assert.Equal(t, probe.Frac, reply.Probe.Frac)
+		assert.Equal(t, reflectorPubKey, reply.AuthorityPubkey)
+		assert.Equal(t, geoprobePubKey, reply.GeoprobePubkey)
+		assert.Empty(t, reply.Offsets)
+		assert.True(t, reply.Probe.Verify())
+		assert.True(t, reply.Verify())
+		assert.NotEqual(t, uint64(0), reply.SinceLastRxNs, "first probe should carry nonce in SinceLastRxNs")
+	})
+
+	t.Run("reject unauthorized pubkey", func(t *testing.T) {
+		t.Parallel()
+
+		_, unauthorizedSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		authorizedPub, _, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		var authorizedPubKey [32]byte
+		copy(authorizedPubKey[:], authorizedPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{authorizedPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		probe := signed.NewProbePacket(1, unauthorizedSigner)
+		var buf [signed.ProbePacketSize]byte
+		require.NoError(t, probe.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(200*time.Millisecond)))
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		_, err = conn.Read(replyBuf)
+		assert.Error(t, err, "should not receive reply for unauthorized pubkey")
+	})
+
+	t.Run("reply to corrupted signature from authorized pubkey", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{senderPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		probe := signed.NewProbePacket(1, senderSigner)
+		probe.Signature[0] ^= 0xff // Corrupt signature.
+
+		var buf [signed.ProbePacketSize]byte
+		require.NoError(t, probe.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		n, err := conn.Read(replyBuf)
+		require.NoError(t, err, "should receive reply for authorized pubkey even with corrupted signature")
+
+		reply, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+		assert.True(t, reply.Verify(), "reply signature should be valid")
+	})
+
+	t.Run("reject wrong-size packets", func(t *testing.T) {
+		t.Parallel()
+
+		_, reflectorSigner := newTestSigner(t)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, nil, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		_, err = conn.Write(make([]byte, 50))
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(200*time.Millisecond)))
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		_, err = conn.Read(replyBuf)
+		assert.Error(t, err, "should not receive reply for wrong-size packet")
+	})
+
+	t.Run("concurrent clients", func(t *testing.T) {
+		t.Parallel()
+
+		_, reflectorSigner := newTestSigner(t)
+
+		reflectorPub := reflectorSigner.Public()
+		var reflectorPubKey [32]byte
+		copy(reflectorPubKey[:], reflectorPub)
+
+		const numClients = 3
+		var senderKeys [numClients]struct {
+			pub    [32]byte
+			signer signed.Signer
+		}
+		authorizedKeys := make([][32]byte, numClients)
+		for i := range numClients {
+			pub, signer := newTestSigner(t)
+			copy(senderKeys[i].pub[:], pub)
+			senderKeys[i].signer = signer
+			authorizedKeys[i] = senderKeys[i].pub
+		}
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, reflectorPubKey, authorizedKeys, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		var wg sync.WaitGroup
+		for i := range numClients {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+
+				conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+				if err != nil {
+					t.Errorf("client %d: dial failed: %v", idx, err)
+					return
+				}
+				defer conn.Close()
+
+				probe := signed.NewProbePacket(1, senderKeys[idx].signer)
+				var buf [signed.ProbePacketSize]byte
+				if err := probe.Marshal(buf[:]); err != nil {
+					t.Errorf("client %d: marshal failed: %v", idx, err)
+					return
+				}
+				if _, err := conn.Write(buf[:]); err != nil {
+					t.Errorf("client %d: write failed: %v", idx, err)
+					return
+				}
+
+				if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+					t.Errorf("client %d: set deadline failed: %v", idx, err)
+					return
+				}
+				replyBuf := make([]byte, signed.MaxReplyPacketSize)
+				n, err := conn.Read(replyBuf)
+				if err != nil {
+					t.Errorf("client %d: read failed: %v", idx, err)
+					return
+				}
+
+				reply, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+				if err != nil {
+					t.Errorf("client %d: unmarshal failed: %v", idx, err)
+					return
+				}
+
+				if !reply.Verify() {
+					t.Errorf("client %d: reply signature verification failed", idx)
+				}
+			}(i)
+		}
+
+		wg.Wait()
+	})
+
+	t.Run("graceful shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		_, reflectorSigner := newTestSigner(t)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, nil, 0)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		done := make(chan error, 1)
+		go func() {
+			done <- reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		cancel()
+		select {
+		case err := <-done:
+			assert.NoError(t, err, "Run should return nil on graceful shutdown")
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run did not return after context cancellation")
+		}
+	})
+
+	t.Run("pubkey allowlist update at runtime", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, nil, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		probe := signed.NewProbePacket(1, senderSigner)
+		var buf [signed.ProbePacketSize]byte
+		require.NoError(t, probe.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(200*time.Millisecond)))
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		_, err = conn.Read(replyBuf)
+		assert.Error(t, err, "should not receive reply before authorization")
+
+		reflector.SetAuthorizedKeys([][32]byte{senderPubKey})
+
+		probe2 := signed.NewProbePacket(2, senderSigner)
+		require.NoError(t, probe2.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		n, err := conn.Read(replyBuf)
+		require.NoError(t, err, "should receive reply after authorization")
+		assert.Equal(t, signed.MinReplyPacketSize, n)
+
+		reply, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+		assert.True(t, reply.Verify())
+	})
+
+	t.Run("reject second probe from different IP", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{senderPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		reflectorAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())}
+
+		// Probe 0 from 127.0.0.1: should get reply.
+		conn1, err := net.DialUDP("udp",
+			&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0},
+			reflectorAddr)
+		require.NoError(t, err)
+		defer conn1.Close()
+
+		probe0 := signed.NewProbePacket(1, senderSigner)
+		var buf [signed.ProbePacketSize]byte
+		require.NoError(t, probe0.Marshal(buf[:]))
+		_, err = conn1.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn1.SetReadDeadline(time.Now().Add(2*time.Second)))
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		_, err = conn1.Read(replyBuf)
+		require.NoError(t, err, "first probe should receive reply")
+
+		// Probe 1 from 127.0.0.2: should be rejected (different source IP).
+		conn2, err := net.DialUDP("udp",
+			&net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 0},
+			reflectorAddr)
+		require.NoError(t, err)
+		defer conn2.Close()
+
+		probe1 := signed.NewProbePacket(2, senderSigner)
+		require.NoError(t, probe1.Marshal(buf[:]))
+		_, err = conn2.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn2.SetReadDeadline(time.Now().Add(200*time.Millisecond)))
+		_, err = conn2.Read(replyBuf)
+		assert.Error(t, err, "second probe from different IP should be rejected")
+	})
+
+	t.Run("stale pair recovery after lost probe 1", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{senderPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		var buf [signed.ProbePacketSize]byte
+
+		// Probe 0: starts a pair (pairCount 0 → 1).
+		probe0 := signed.NewProbePacket(1, senderSigner)
+		require.NoError(t, probe0.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		n, err := conn.Read(replyBuf)
+		require.NoError(t, err, "probe 0 should receive reply")
+		reply0, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+		assert.NotEqual(t, uint64(0), reply0.SinceLastRxNs, "probe 0 should carry nonce in SinceLastRxNs")
+
+		// Simulate probe 1 loss: wait for stalePairTimeout to expire.
+		time.Sleep(6 * time.Second)
+
+		// Next probe 0: should be treated as probe 0 (not misidentified as probe 1).
+		nextProbe0 := signed.NewProbePacket(10, senderSigner)
+		require.NoError(t, nextProbe0.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		n, err = conn.Read(replyBuf)
+		require.NoError(t, err, "next probe 0 should receive reply")
+		nextReply0, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+		assert.NotEqual(t, uint64(0), nextReply0.SinceLastRxNs, "after stale reset, probe 0 should carry nonce in SinceLastRxNs")
+
+		// Probe 1: pair should work correctly after recovery.
+		nextProbe1 := signed.NewProbePacket(11, senderSigner)
+		require.NoError(t, nextProbe1.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		n, err = conn.Read(replyBuf)
+		require.NoError(t, err, "probe 1 should receive reply")
+		nextReply1, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+		assert.Greater(t, nextReply1.SinceLastRxNs, uint64(0), "probe 1 should have non-zero SinceLastRxNs after recovery")
+	})
+
+	t.Run("Reply0 contains non-zero nonce in SinceLastRxNs", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{senderPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() { _ = reflector.Run(ctx) }()
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		probe := signed.NewProbePacket(1, senderSigner)
+		var buf [signed.ProbePacketSize]byte
+		require.NoError(t, probe.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		n, err := conn.Read(replyBuf)
+		require.NoError(t, err)
+
+		reply, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+		assert.NotEqual(t, uint64(0), reply.SinceLastRxNs, "expected non-zero nonce in Reply0.SinceLastRxNs")
+	})
+
+	t.Run("Reply0 nonce varies across pairs from same sender", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("relies on 6s stale-pair timeout")
+		}
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		// verifyInterval=0 so no rate limiting; stale timeout resets the pair.
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{senderPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		go func() { _ = reflector.Run(ctx) }()
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		sendAndReadReply := func(seq uint32) *signed.ReplyPacket {
+			t.Helper()
+			probe := signed.NewProbePacket(seq, senderSigner)
+			var buf [signed.ProbePacketSize]byte
+			require.NoError(t, probe.Marshal(buf[:]))
+			_, err = conn.Write(buf[:])
+			require.NoError(t, err)
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+			replyBuf := make([]byte, signed.MaxReplyPacketSize)
+			n, err := conn.Read(replyBuf)
+			require.NoError(t, err)
+			reply, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+			require.NoError(t, err)
+			return reply
+		}
+
+		// Pair A: probe 0 only (pair 1 never arrives; stale timeout resets state).
+		replyA := sendAndReadReply(1)
+
+		// Wait for stalePairTimeout (5s) to expire so the next probe starts a fresh pair.
+		time.Sleep(6 * time.Second)
+
+		// Pair B: probe 0 of a new pair.
+		replyB := sendAndReadReply(2)
+
+		assert.NotEqual(t, replyA.SinceLastRxNs, replyB.SinceLastRxNs, "expected distinct nonces across pairs")
+	})
+
+	t.Run("Reply1 challenged when nonce matches", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{senderPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() { _ = reflector.Run(ctx) }()
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		sendAndReadReply := func(probe *signed.ProbePacket) *signed.ReplyPacket {
+			t.Helper()
+			var buf [signed.ProbePacketSize]byte
+			require.NoError(t, probe.Marshal(buf[:]))
+			_, err = conn.Write(buf[:])
+			require.NoError(t, err)
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+			replyBuf := make([]byte, signed.MaxReplyPacketSize)
+			n, err := conn.Read(replyBuf)
+			require.NoError(t, err)
+			reply, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+			require.NoError(t, err)
+			return reply
+		}
+
+		probe0 := signed.NewProbePacket(1, senderSigner)
+		reply0 := sendAndReadReply(probe0)
+		nonce := reply0.SinceLastRxNs
+
+		probe1 := signed.NewProbePacket(2, senderSigner)
+		overwriteProbeSecFracAndResign(t, probe1, nonce, senderSigner)
+		reply1 := sendAndReadReply(probe1)
+
+		assert.True(t, reply1.Challenged, "Reply 1 should be flagged Challenged after nonce echo")
+		assert.NotEqual(t, uint64(0), reply1.SinceLastRxNs, "Reply 1 should carry the Tx-to-Rx interval")
+	})
+
+	t.Run("Reply1 unchallenged when nonce mismatches", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{senderPubKey}, 0)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() { _ = reflector.Run(ctx) }()
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		sendAndReadReply := func(probe *signed.ProbePacket) *signed.ReplyPacket {
+			t.Helper()
+			var buf [signed.ProbePacketSize]byte
+			require.NoError(t, probe.Marshal(buf[:]))
+			_, err = conn.Write(buf[:])
+			require.NoError(t, err)
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+			replyBuf := make([]byte, signed.MaxReplyPacketSize)
+			n, err := conn.Read(replyBuf)
+			require.NoError(t, err)
+			reply, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+			require.NoError(t, err)
+			return reply
+		}
+
+		probe0 := signed.NewProbePacket(1, senderSigner)
+		_ = sendAndReadReply(probe0)
+
+		// Probe 1 with default NTP timestamp — not echoing the nonce.
+		probe1 := signed.NewProbePacket(2, senderSigner)
+		reply1 := sendAndReadReply(probe1)
+
+		assert.False(t, reply1.Challenged, "Reply 1 should not be flagged Challenged when nonce was not echoed")
+		assert.Empty(t, reply1.Offsets, "test setup attached no offsets to the reflector")
+	})
+
+	t.Run("pair-based rate limiting", func(t *testing.T) {
+		t.Parallel()
+
+		senderPub, senderSigner := newTestSigner(t)
+		_, reflectorSigner := newTestSigner(t)
+
+		var senderPubKey [32]byte
+		copy(senderPubKey[:], senderPub)
+
+		reflector, err := signed.NewLinuxReflector("127.0.0.1:0", 100*time.Millisecond, reflectorSigner, [32]byte{}, [][32]byte{senderPubKey}, 10*time.Second)
+		require.NoError(t, err)
+		defer reflector.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		go func() {
+			_ = reflector.Run(ctx)
+		}()
+
+		time.Sleep(10 * time.Millisecond)
+
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(reflector.Port())})
+		require.NoError(t, err)
+		defer conn.Close()
+
+		// Probe 1: should get reply (first of pair).
+		probe1 := signed.NewProbePacket(1, senderSigner)
+		var buf [signed.ProbePacketSize]byte
+		require.NoError(t, probe1.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		replyBuf := make([]byte, signed.MaxReplyPacketSize)
+		n, err := conn.Read(replyBuf)
+		require.NoError(t, err, "first probe should receive reply")
+
+		reply1, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+		assert.NotEqual(t, uint64(0), reply1.SinceLastRxNs, "first probe should carry nonce in SinceLastRxNs")
+
+		// Probe 2: should get reply (second of pair).
+		probe2 := signed.NewProbePacket(2, senderSigner)
+		require.NoError(t, probe2.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		n, err = conn.Read(replyBuf)
+		require.NoError(t, err, "second probe should receive reply (pair allowed)")
+
+		reply2, err := signed.UnmarshalReplyPacket(replyBuf[:n])
+		require.NoError(t, err)
+		assert.Greater(t, reply2.SinceLastRxNs, uint64(0), "second probe should have non-zero SinceLastRxNs")
+
+		// Probe 3: should be dropped (pair exhausted, within verifyInterval).
+		probe3 := signed.NewProbePacket(3, senderSigner)
+		require.NoError(t, probe3.Marshal(buf[:]))
+		_, err = conn.Write(buf[:])
+		require.NoError(t, err)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(200*time.Millisecond)))
+		_, err = conn.Read(replyBuf)
+		assert.Error(t, err, "third probe should be rate-limited")
+	})
+}
+
+// overwriteProbeSecFracAndResign rewrites the Sec/Frac fields of probe to
+// carry the given nonce (BigEndian: Sec = upper 4 bytes, Frac = lower 4),
+// then re-signs the probe payload. Mirrors what a challenged sender does.
+func overwriteProbeSecFracAndResign(t *testing.T, p *signed.ProbePacket, nonce uint64, signer signed.Signer) {
+	t.Helper()
+	p.Sec = uint32(nonce >> 32)
+	p.Frac = uint32(nonce & 0xFFFFFFFF)
+	var payload [44]byte
+	binary.BigEndian.PutUint32(payload[0:4], p.Seq)
+	binary.BigEndian.PutUint32(payload[4:8], p.Sec)
+	binary.BigEndian.PutUint32(payload[8:12], p.Frac)
+	copy(payload[12:44], p.SenderPubkey[:])
+	sig := signer.Sign(payload[:])
+	copy(p.Signature[:], sig)
+}
