@@ -1,0 +1,43 @@
+plugin-rtt-anchor
+Copyright 2026 Sophia Systems
+
+This product includes software developed by Malbec Labs as part of the
+DoubleZero project (https://github.com/malbeclabs/doublezero), licensed under
+the Apache License, Version 2.0.
+
+--------------------------------------------------------------------------------
+Derivation and modifications
+--------------------------------------------------------------------------------
+
+This repository is a partial extraction of DoubleZero's geolocation verification
+system, described in that project's RFC-16. It is an independent derivative: it
+does not connect to, depend on, or interoperate with the DoubleZero network, and
+it is not endorsed by or affiliated with Malbec Labs.
+
+Files reproduced verbatim from DoubleZero:
+
+  internal/signed/*.go
+      Copied from tools/twamp/pkg/signed/ without functional modification.
+      Only the module import path in the *_test.go files was changed.
+
+Files derived from DoubleZero with substantial modification:
+
+  internal/offset/offset.go
+      Reimplemented from controlplane/telemetry/internal/geoprobe/offset.go and
+      signer.go. The wire layout is preserved for compatibility with
+      internal/signed; the Borsh and Solana dependencies were removed in favour
+      of encoding/binary and crypto/ed25519, and the field carrying a Solana
+      slot number now carries a Unix timestamp.
+
+Files written for this repository, not derived from DoubleZero:
+
+  cmd/anchor/, cmd/attester/, internal/keys/, internal/geo/, docs/
+
+Components of DoubleZero's system deliberately omitted here: the Solana ledger
+and all onchain account discovery, the third measurement tier in which network
+devices act as roots of trust, the outbound probing flow, the ICMP pinger, and
+the ClickHouse, Prometheus and DNS subsystems.
+
+The constants in internal/geo/distance.go match those in the
+sovereignty-certificate reference implementation so distances produced by the
+two systems are directly comparable.
