@@ -133,6 +133,7 @@ which are the part that constitutes evidence.
 - [docs/deployment.md](docs/deployment.md) — topology, host requirements, anchor siting, operations
 - [docs/sovcert-mapping.md](docs/sovcert-mapping.md) — the roles this implements, conformance against the specification, and how output maps onto the evidence framework
 - [docs/incongruities.md](docs/incongruities.md) — open questions found while implementing, including where the specification and the framework disagree
+- [docs/open-questions.md](docs/open-questions.md) — what we do not know yet about the method itself: sampling statistics, signature cost, ordering, and path behaviour
 - [docs/gpu-binding.md](docs/gpu-binding.md) — binding a measurement to specific hardware, and why it cannot be done naively
 
 ## Rate limiting
