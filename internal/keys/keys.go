@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // Load reads an Ed25519 private key from a JSON key file.
@@ -107,6 +109,32 @@ func Parse(s string) ([32]byte, error) {
 	return out, nil
 }
 
+func parseSSHEd25519Key(line []byte) ([32]byte, error) {
+	var out [32]byte
+
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(line)
+	if err != nil {
+		return out, fmt.Errorf("failed to parse SSH authorized key: %w", err)
+	}
+
+	cryptoPubKey, ok := pubKey.(ssh.CryptoPublicKey)
+	if !ok {
+		return out, fmt.Errorf("key does not implement ssh.CryptoPublicKey")
+	}
+
+	ed25519Key, ok := cryptoPubKey.CryptoPublicKey().(ed25519.PublicKey)
+	if !ok {
+		return out, fmt.Errorf("expected ed25519 key, got %T", cryptoPubKey.CryptoPublicKey())
+	}
+
+	if len(ed25519Key) != ed25519.PublicKeySize {
+		return out, fmt.Errorf("invalid ed25519 key size: got %d, want %d", len(ed25519Key), ed25519.PublicKeySize)
+	}
+
+	copy(out[:], ed25519Key)
+	return out, nil
+}
+
 // LoadAllowlist reads permitted sender public keys, one hex key per line.
 // Blank lines and everything after a '#' are ignored.
 //
@@ -152,5 +180,8 @@ func LoadAllowlist(path string) ([][32]byte, error) {
 // keyFromLine takes the first whitespace-separated field, so a line may carry a
 // trailing label ("<key>  gpu-node-3") for operator sanity.
 func keyFromLine(text string) ([32]byte, error) {
+	if strings.HasPrefix(text, "ssh-") {
+		return parseSSHEd25519Key([]byte(text))
+	}
 	return Parse(strings.Fields(text)[0])
 }
