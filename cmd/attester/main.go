@@ -17,8 +17,7 @@
 //
 // What this establishes: the holder of this key was within some distance of the
 // anchor's coordinates at a given moment. It says nothing about what hardware
-// held the key. Binding that to a specific GPU is a separate layer -- see
-// docs/gpu-binding.md.
+// held the key. Binding that to a specific GPU is enabled via the -use-gpu flag.
 package main
 
 /*
@@ -65,6 +64,7 @@ var (
 	timeout      = flag.Duration("timeout", 2*time.Second, "per-pair timeout")
 	unchallenged = flag.Bool("unchallenged", false, "skip the nonce echo; faster but forgeable, and only appropriate inside a TEE")
 
+	useGPU    = flag.Bool("use-gpu", false, "enable GPU memory-hard VRAM traversal hardware binding")
 	gpuDevice = flag.Int("gpu-device", 0, "CUDA GPU device index")
 	vramGB    = flag.Uint64("vram-gb", 2, "Gigabytes of VRAM to allocate for memory-hard challenge")
 
@@ -181,12 +181,24 @@ func run(log *slog.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	vramBytes := size_t_bytes(*vramGB * 1024 * 1024 * 1024)
-	signer, err := NewGPUMemorySigner(priv, *gpuDevice, vramBytes)
-	if err != nil {
-		return fmt.Errorf("init GPU signer: %w", err)
+	// Decide whether to use the GPU or standard CPU signer
+	var signer signed.Signer
+	if *useGPU {
+		vramBytes := size_t_bytes(*vramGB * 1024 * 1024 * 1024)
+		gpuSigner, err := NewGPUMemorySigner(priv, *gpuDevice, vramBytes)
+		if err != nil {
+			return fmt.Errorf("init GPU signer: %w", err)
+		}
+		defer C.free_gpu_memory(C.int(*gpuDevice))
+		signer = gpuSigner
+		log.Info("attesting with GPU hardware proof enabled",
+			"vram_gb", *vramGB,
+			"gpu_device", *gpuDevice,
+		)
+	} else {
+		signer = signed.NewEd25519Signer(priv)
+		log.Info("attesting with standard CPU signing (GPU disabled)")
 	}
-	defer C.free_gpu_memory(C.int(*gpuDevice))
 
 	sender, err := signed.NewSender(ctx, "", &net.UDPAddr{Port: 0}, remote, signer, anchorPub, !*unchallenged)
 	if err != nil {
@@ -197,14 +209,13 @@ func run(log *slog.Logger) error {
 		sender.SetLogger(log)
 	}
 
-	log.Info("attesting with GPU hardware proof",
-		"vram_gb", *vramGB,
-		"gpu_device", *gpuDevice,
+	log.Info("attesting",
 		"anchor", remote.String(),
 		"anchor_key", keys.Format(anchorPub),
 		"public_key", keys.Format(self),
 		"challenged", !*unchallenged,
 		"interval", *interval,
+		"use_gpu", *useGPU,
 	)
 
 	for seq := uint32(1); ; seq++ {
@@ -248,10 +259,12 @@ func measure(ctx context.Context, log *slog.Logger, sender signed.Sender, seq ui
 // onto that model without a translation step; nanosecond values are retained
 // alongside because that is the precision the wire format actually carries.
 type observation struct {
-	Seq         uint32 `json:"seq"`
-	Timestamp   string `json:"timestamp"`
+	Seq       uint32 `json:"seq"`
+	Timestamp string `json:"timestamp"`
+
 	AnchorKey   string `json:"anchor_key"`
 	AttesterKey string `json:"attester_key"`
+
 	// AnchorMeasuredRttNs is the interval the anchor timed between sending
 	// reply 0 and receiving probe 1. It arrives inside the anchor's signature,
 	// so it is the number a verifier can rely on.
@@ -272,10 +285,12 @@ type observation struct {
 	// CalibratedDistanceM inverts the fiber model and is an estimate.
 	ProvableMaxDistanceM float64 `json:"provable_max_distance_m"`
 	CalibratedDistanceM  float64 `json:"calibrated_distance_m"`
-	ObservedAt           string  `json:"observed_at,omitempty"`
-	Reply0Valid          bool    `json:"reply0_valid"`
-	Reply1Valid          bool    `json:"reply1_valid"`
-	AnchorKeyMatch       bool    `json:"anchor_key_match"`
+
+	ObservedAt string `json:"observed_at,omitempty"`
+
+	Reply0Valid    bool `json:"reply0_valid"`
+	Reply1Valid    bool `json:"reply1_valid"`
+	AnchorKeyMatch bool `json:"anchor_key_match"`
 
 	// Reply0Raw and Reply1Raw are the anchor-signed reply bytes, base64. Present
 	// only with -raw. They are the actual evidence: everything else in this
