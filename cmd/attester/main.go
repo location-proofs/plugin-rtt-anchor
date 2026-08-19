@@ -397,8 +397,10 @@ func render(obs observation) string {
 		return b.String()
 	}
 
-	fmt.Fprintf(&b, "  anchor-measured RTT:   %s\n", ms(obs.AnchorMeasuredRttNs))
-	fmt.Fprintf(&b, "  attester-measured RTT: %s\n", ms(obs.AttesterMeasuredRttNs))
+	fmt.Fprintf(&b, "  anchor-measured RTT ms:   %s\n", ms(obs.AnchorMeasuredRttNs))
+	fmt.Fprintf(&b, "  anchor-measured RTT μs:   %s\n", us(obs.AnchorMeasuredRttNs))
+	fmt.Fprintf(&b, "  attester-measured RTT ms: %s\n", ms(obs.AttesterMeasuredRttNs))
+	fmt.Fprintf(&b, "  attester-measured RTT μs: %s\n", us(obs.AttesterMeasuredRttNs))
 	fmt.Fprintf(&b, "  challenged:            %v\n", obs.Challenged)
 	if !obs.Challenged {
 		fmt.Fprintf(&b, "    (unchallenged: no proof this host waited for reply 0)\n")
@@ -423,6 +425,7 @@ func render(obs observation) string {
 }
 
 func ms(ns uint64) string { return fmt.Sprintf("%.3f ms", float64(ns)/1e6) }
+func us(ns uint64) string { return fmt.Sprintf("%.3f μs", float64(ns)/1e3) }
 
 func coord(lat, lon float64) string {
 	ns, ew := "N", "E"
