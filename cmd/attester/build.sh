@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -e # exit if any stetp returns a non zero status
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
