@@ -21,8 +21,30 @@
 // docs/gpu-binding.md.
 package main
 
+/*
+#cgo LDFLAGS: -L. -lgpusigner -L/usr/local/cuda/lib64 -lcudart_static -lrt -ldl -lstdc++
+#include <stdint.h>
+#include <stdlib.h>
+#include "gpu_signer.h"
+
+
+// Forward declaration of your GPU signing routine (e.g. implemented in a .cu file).
+// Returns 0 on success, non-zero on error.
+extern int gpu_ed25519_sign(
+    int device_id,
+    const uint8_t* priv_key,
+    const uint8_t* msg,
+    size_t msg_len,
+    uint8_t* out_sig
+);
+
+extern int gpu_init_context(int device_id);
+*/
+import "C"
+
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -35,12 +57,20 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/location-proofs/plugin-rtt-anchor/internal/geo"
 	"github.com/location-proofs/plugin-rtt-anchor/internal/keys"
 	"github.com/location-proofs/plugin-rtt-anchor/internal/offset"
 	"github.com/location-proofs/plugin-rtt-anchor/internal/signed"
 )
+
+// GPUSigner implements the signed.Signer interface on a target GPU device.
+type GPUSigner struct {
+	deviceID int
+	priv     ed25519.PrivateKey
+	pub      ed25519.PublicKey
+}
 
 var (
 	anchorAddr   = flag.String("anchor", "", "anchor address as host:port (required)")
@@ -51,17 +81,78 @@ var (
 	timeout      = flag.Duration("timeout", 2*time.Second, "per-pair timeout")
 	unchallenged = flag.Bool("unchallenged", false, "skip the nonce echo; faster but forgeable, and only appropriate inside a TEE")
 
+	// GPU flags
+	useGPU    = flag.Bool("gpu", false, "execute signing operations directly on the GPU")
+	gpuDevice = flag.Int("gpu-device", 0, "GPU device index to execute signing on")
+
 	// processingDelay is the calibration constant subtracted before converting
 	// time to distance. It absorbs anchor-side handling plus this host's own
 	// signing time, both of which inflate the measurement. Leaving it at zero
 	// is safe: it only ever makes the estimate more conservative.
 	processingDelay = flag.Duration("processing-delay", 0, "calibrated per-anchor processing delay to subtract before estimating distance")
-
-	jsonOut  = flag.Bool("json", false, "emit one JSON object per pair instead of text")
-	raw      = flag.Bool("raw", false, "include base64 anchor-signed reply bytes in JSON output, for independent verification")
-	printKey = flag.Bool("print-key", false, "print this attester's public key and exit")
-	verbose  = flag.Bool("verbose", false, "enable debug logging")
+	jsonOut         = flag.Bool("json", false, "emit one JSON object per pair instead of text")
+	raw             = flag.Bool("raw", false, "include base64 anchor-signed reply bytes in JSON output, for independent verification")
+	printKey        = flag.Bool("print-key", false, "print this attester's public key and exit")
+	verbose         = flag.Bool("verbose", false, "enable debug logging")
 )
+
+// GPUSigner implements the signed.Signer interface on a target GPU device.
+// type GPUSigner struct {
+// 	deviceID int
+// 	priv     [64]byte
+// 	pub      [32]byte
+// }
+
+func NewGPUSigner(deviceID int, privKey ed25519.PrivateKey) (*GPUSigner, error) {
+	if len(privKey) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid private key size: expected %d, got %d", ed25519.PrivateKeySize, len(privKey))
+	}
+
+	res := C.gpu_init_context(C.int(deviceID))
+	if res != 0 {
+		return nil, fmt.Errorf("failed to initialize GPU context on device %d (code %d)", deviceID, res)
+	}
+
+	pubKey, ok := privKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, errors.New("failed to derive public key from private key")
+	}
+
+	return &GPUSigner{
+		deviceID: deviceID,
+		priv:     privKey,
+		pub:      pubKey,
+	}, nil
+}
+
+func (s *GPUSigner) Public() ed25519.PublicKey {
+	return s.pub
+}
+
+func (s *GPUSigner) Sign(msg []byte) []byte {
+	if len(msg) == 0 {
+		panic("empty message to sign")
+	}
+
+	sig := make([]byte, ed25519.SignatureSize)
+
+	cPriv := (*C.uint8_t)(unsafe.Pointer(&s.priv[0]))
+	cMsg := (*C.uint8_t)(unsafe.Pointer(&msg[0]))
+	cSig := (*C.uint8_t)(unsafe.Pointer(&sig[0]))
+
+	ret := C.gpu_ed25519_sign(
+		C.int(s.deviceID),
+		cPriv,
+		cMsg,
+		C.size_t(len(msg)),
+		cSig,
+	)
+	if ret != 0 {
+		panic(fmt.Sprintf("GPU signing kernel returned failure code %d", ret))
+	}
+
+	return sig
+}
 
 func main() {
 	flag.Parse()
@@ -108,7 +199,20 @@ func run(log *slog.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	sender, err := signed.NewSender(ctx, "", &net.UDPAddr{Port: 0}, remote, signed.NewEd25519Signer(priv), anchorPub, !*unchallenged)
+	// Select Signer backend: GPU or CPU
+	var signer signed.Signer
+	if *useGPU {
+		log.Info("initializing GPU signer", "device", *gpuDevice)
+		gpuSigner, err := NewGPUSigner(*gpuDevice, priv)
+		if err != nil {
+			return fmt.Errorf("init GPU signer: %w", err)
+		}
+		signer = gpuSigner
+	} else {
+		signer = signed.NewEd25519Signer(priv)
+	}
+
+	sender, err := signed.NewSender(ctx, "", &net.UDPAddr{Port: 0}, remote, signer, anchorPub, !*unchallenged)
 	if err != nil {
 		return fmt.Errorf("create sender: %w", err)
 	}
@@ -123,6 +227,7 @@ func run(log *slog.Logger) error {
 		"public_key", keys.Format(self),
 		"challenged", !*unchallenged,
 		"interval", *interval,
+		"gpu_enabled", *useGPU,
 	)
 
 	for seq := uint32(1); ; seq++ {
