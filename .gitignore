@@ -15,3 +15,9 @@ allowlist.txt
 
 # Local evidence output.
 *.jsonl
+cmd/anchor/anchor
+cmd/attester/attester
+*.o
+*.a
+*.mod
+*.sum
