@@ -1,11 +1,17 @@
-# Compiles for Turing (RTX 20/T4), Ampere (RTX 30/A100), and Ada (RTX 40/L4)
-nvcc -O3 -c gpu_signer.cu -o gpu_signer.o \
-  -gencode arch=compute_86,code=sm_86 \
-  --compiler-options '-fPIC'
+#!/usr/bin/env bash
+set -e
 
-# Create the static library again
-ar rcs libgpusigner.a gpu_signer.o
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DIR"
 
-export CGO_CFLAGS="-I."
-CGO_LDFLAGS="-L. -lgpusigner -L/usr/local/cuda/lib64 -lcudart_static -lrt -ldl -lstdc++"
- go build -o attester main.go
+echo "[1/3] Cleaning old shared objects..."
+rm -f "${DIR}/libgpuprover.so" "${DIR}/libgpuprover.a" "${DIR}/gpu_prover.o" "${DIR}/attester"
+
+echo "[2/3] Compiling CUDA static archive (libgpuprover.a)..."
+nvcc -O3 -c -Xcompiler -fPIC -o "${DIR}/gpu_prover.o" "${DIR}/gpu_prover.cu"
+ar rcs "${DIR}/libgpuprover.a" "${DIR}/gpu_prover.o"
+
+echo "[3/3] Compiling Go attester binary..."
+CGO_ENABLED=1 go build -o "${DIR}/attester" "${DIR}/main.go"
+
+echo "Build complete: ${DIR}/attester"
