@@ -119,7 +119,8 @@ developed in [gpu-binding.md](gpu-binding.md).
 
 ## Wire format
 
-Two packet types, both fixed-layout and little-endian.
+Two packet types, both fixed-layout and big-endian — except the embedded
+Borsh `LocationOffset` blobs, which keep Borsh's little-endian encoding.
 
 ### Probe, 108 bytes
 
