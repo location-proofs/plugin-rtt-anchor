@@ -13,8 +13,8 @@
         {{ home_dir }}/location-proofs/attester \
           -anchor {{ anchor_info.ansible_host }}:{{ anchor_info.anchor_port }} \
           -anchor-key {{ target_anchor_key }} \
-          -interval 100ms \
-          -timeout 200ms \
+          -interval 50ms \
+          -timeout 100ms \
           -count {{ measurement_count }} \
           {{ gpu_flag }} \
           -json > {{ home_dir }}/location-proofs/measurements_{{ test_item.label }}.json
