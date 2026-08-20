@@ -31,7 +31,7 @@ files_to_load = [
     "../results/measurements_node1_to_node1_cpu.json",
     "../results/measurements_node1_to_node1_gpu.json",
     "../results/measurements_tuusula_to_falk_cpu.json",
-    "../results/measurements_tuusula_to_node1_gpu.json",
+    "../results/measurements_tuusula_to_node1_gpu.json"
     "../results/measurements_tuusula_to_tuusula_cpu.json"
 ]
 
@@ -79,7 +79,7 @@ for file_path in files_to_load:
                 floor_stable_at_end = False # Minimum dropped late in the run
 
         # Step D: Adaptive / Robust Tolerance Check
-        tolerance_us = 125
+        tolerance_us = 50
         is_converged = (min_spread <= tolerance_us) and floor_stable_at_end
         
         print(f"-> Bucket Mins (µs): {[round(m, 2) for m in bucket_mins]}")
