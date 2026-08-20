@@ -1,60 +1,91 @@
 import json
-import glob
 import pandas as pd
 import matplotlib.pyplot as plt
+from pathlib import Path
 
-def load_measurement_files(file_pattern="*.json"):
+def load_single_measurement_file(filepath):
     data_rows = []
-    for filepath in glob.glob(file_pattern):
-        with open(filepath, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        record = json.loads(line)
-                        record['source_file'] = filepath
-                        data_rows.append(record)
-                    except json.JSONDecodeError:
-                        continue
+    path = Path(filepath)
+    if not path.exists():
+        print(f"File not found: {path}")
+        return pd.DataFrame()
+        
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    record = json.loads(line)
+                    record['source_file'] = path.name
+                    data_rows.append(record)
+                except json.JSONDecodeError:
+                    continue
     return pd.DataFrame(data_rows)
 
-# 1. Load all measurement JSON files
-df = load_measurement_files("../results/measurements_falk_to_node1_gpu.json")
+files_to_load = [
+    "../results/measurements_falk_to_falk_cpu.json",
+    "../results/measurements_falk_to_node1_cpu.json",
+    "../results/measurements_falk_to_node1_gpu.json",
+    "../results/measurements_falk_to_tuusula_cpu.json",
+    "../results/measurements_node1_to_node1_cpu.json",
+    "../results/measurements_node1_to_node1_gpu.json",
+    "../results/measurements_tuusula_to_falk_cpu.json",
+    "../results/measurements_tuusula_to_node1_gpu.json",
+    "../results/measurements_tuusula_to_tuusula_cpu.json"
+]
 
-if df.empty:
-    print("No measurement records found! Check your file path or extension.")
-else:
-    print(f"Successfully loaded {len(df)} total records from files.")
-    
-    # 2. Key Statistics Summary
-    percentiles_list = [0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
+# Process each measurement file individually
+for file_path in files_to_load:
+    try:
+        print(f"\nProcessing: {file_path}")
+        df = load_single_measurement_file(file_path)
+        
+        if df.empty:
+            print(f"No measurement records found or file skipped.")
+            continue
+            
+        print(f"Successfully loaded {len(df)} records.")
+        
+        # 1. Convert RTT from seconds to microseconds (µs)
+        if 'anchor_measured_rtt_s' in df.columns:
+            df['anchor_measured_rtt_us'] = df['anchor_measured_rtt_s'] * 1_000_000
+        elif 'anchor_measured_rtt_ns' in df.columns:
+            df['anchor_measured_rtt_us'] = df['anchor_measured_rtt_ns'] / 1_000
+        
+        # 2. Key Statistics Summary (using microseconds)
+        percentiles_list = [0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
+        summary = df[['anchor_measured_rtt_us', 'calibrated_distance_m']].describe(percentiles=percentiles_list)
+        print("\n--- Summary Statistics (RTT in µs) ---")
+        print(summary)
+        
+        # 3. Plotting RTT Trends and Distribution in Microseconds
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    summary = df[['anchor_measured_rtt_s', 'calibrated_distance_m']].describe(percentiles=percentiles_list)
-    print("\n--- Detailed Summary Statistics with 99th Percentile ---")
-    print(summary)
-    
-    # 3. Plotting RTT Trends and Distribution
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        rtt_us = df['anchor_measured_rtt_us']
 
-    # Convert RTT to milliseconds for easier reading if it's stored in seconds
-    rtt_s = df['anchor_measured_rtt_s'] if 'anchor_measured_rtt_s' in df else df['anchor_measured_rtt_ns'] / 1e9
-    rtt_ms = rtt_s * 1000
+        # Plot 1: RTT over sequence
+        axes[0].plot(df['seq'], rtt_us, marker='.', linestyle='-', alpha=0.6, color='b')
+        axes[0].set_title(f'RTT Over Sequence ({Path(file_path).stem})')
+        axes[0].set_xlabel('Sequence Number')
+        axes[0].set_ylabel('RTT (µs)')
+        axes[0].grid(True)
 
-    # Plot 1: RTT over sequence
-    axes[0].plot(df['seq'], rtt_ms, marker='.', linestyle='-', alpha=0.6, color='b')
-    axes[0].set_title('Anchor Measured RTT Over Sequence')
-    axes[0].set_xlabel('Sequence Number')
-    axes[0].set_ylabel('RTT (ms)')
-    axes[0].grid(True)
+        # Plot 2: RTT Distribution Histogram
+        axes[1].hist(rtt_us, bins=30, color='g', alpha=0.7, edgecolor='black')
+        axes[1].set_title('RTT Distribution')
+        axes[1].set_xlabel('RTT (µs)')
+        axes[1].set_ylabel('Frequency')
+        axes[1].grid(True)
 
-    # Plot 2: RTT Distribution Histogram
-    axes[1].hist(rtt_ms, bins=30, color='g', alpha=0.7, edgecolor='black')
-    axes[1].set_title('RTT Distribution')
-    axes[1].set_xlabel('RTT (ms)')
-    axes[1].set_ylabel('Frequency')
-    axes[1].grid(True)
+        plt.tight_layout()
+        
+        # Dynamically name the output PNG based on the source filename
+        output_filename = f"rtt_analysis_{Path(file_path).stem}.png"
+        plt.savefig(output_filename, dpi=300)
+        print(f"Plot saved successfully as '{output_filename}'.")
+        
+        # Close the plot to free memory
+        plt.close(fig)
 
-    plt.tight_layout()
-    plt.savefig('rtt_analysis.png', dpi=300)
-    print("\nPlot saved successfully as 'rtt_analysis.png'.")
-    plt.show()
+    except Exception as e:
+        print(f"Error processing {file_path}: {e}")
