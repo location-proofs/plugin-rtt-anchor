@@ -1,0 +1,1 @@
+Both the anchor and attester executables live in this files/ directory. After being built they must be copied over, otherwise the ansible playbook will not work.
