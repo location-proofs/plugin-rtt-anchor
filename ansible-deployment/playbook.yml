@@ -1,0 +1,102 @@
+---
+- name: Automated Distributed Location Verification Test Matrix
+  hosts: location_nodes
+  vars:
+    measurement_count: 1000
+
+  tasks:
+    - name: Ensure remote working directory exists
+      file:
+        path: /home/{{ ansible_user }}/location-proofs
+        state: directory
+        mode: '0755'
+
+    - name: Copy binaries to all nodes
+      copy:
+        src: "files/{{ item }}"
+        dest: "/home/{{ ansible_user }}/location-proofs/{{ item }}"
+        mode: '0755'
+      loop:
+        - anchor
+        - attester
+
+    - name: Get attester public key from each node
+      shell: /home/{{ ansible_user }}/location-proofs/attester -print-key
+      register: attester_pub_key_result
+
+    - name: Store attester public key as a host fact
+      set_fact:
+        attester_pub_key: "{{ attester_pub_key_result.stdout | trim }}"
+
+    - name: Dynamically generate allowlist containing all attester keys on every node
+      copy:
+        content: |
+          {% for host in groups['location_nodes'] %}
+          {{ hostvars[host].attester_pub_key }}
+          {% endfor %}
+        dest: /home/{{ ansible_user }}/location-proofs/allowlist.txt
+        mode: '0644'
+
+    - name: Ensure anchor port is completely free
+      shell: |
+            fuser -k {{ anchor_port }}/tcp 2>/dev/null || true
+            fuser -k {{ anchor_port }}/udp 2>/dev/null || true
+            pkill -u {{ ansible_user }} -f anchor || true
+      changed_when: false
+      failed_when: false
+
+    - name: Start Anchors on all nodes
+      shell: |
+        nohup /home/{{ ansible_user }}/location-proofs/anchor \
+          -lat {{ lat }} \
+          -lng {{ lng }} \
+          -allowlist /home/{{ ansible_user }}/location-proofs/allowlist.txt \
+          -listen 0.0.0.0:{{ anchor_port }} \
+          -verify-interval 50ms > /home/{{ ansible_user }}/location-proofs/anchor_{{ inventory_hostname }}.log 2>&1 &
+      async: 86400
+      poll: 0
+
+    - name: Wait for anchors to initialize and generate keys
+      pause:
+        seconds: 3
+
+    - name: Extract the generated anchor public key dynamically from logs
+      shell: |
+        grep -oP 'public_key=\K[0-9a-f]{64}' /home/{{ ansible_user }}/location-proofs/anchor_{{ inventory_hostname }}.log
+      register: extracted_key
+
+    - name: Set public key as a host fact for cross-reference
+      set_fact:
+        dynamic_anchor_key: "{{ extracted_key.stdout | trim }}"
+
+# ==========================================
+# EXECUTE TEST MATRIX DIRECTLY
+# ==========================================
+- name: Run Test Matrix Across Nodes
+  hosts: location_nodes
+  gather_facts: no
+  vars:
+    measurement_count: 1000
+
+  tasks:
+    - name: Run test matrix combinations
+      include_tasks: tasks/run_test.yml
+      loop:
+        # Falkenstein Anchor Tests
+        - { anchor: "falkenstein", attester: "falkenstein", use_gpu: false, label: "falk_to_falk_cpu" }
+        # - { anchor: "falkenstein", attester: "node1", use_gpu: false, label: "falk_to_node1_cpu" }
+        # - { anchor: "falkenstein", attester: "node1", use_gpu: true,  label: "falk_to_node1_gpu" }
+        - { anchor: "falkenstein", attester: "tuusula", use_gpu: false, label: "falk_to_tuusula_cpu" }
+        
+        # Tuusula Anchor Tests
+        - { anchor: "tuusula", attester: "falkenstein", use_gpu: false, label: "tuusula_to_falk_cpu" }
+        # - { anchor: "tuusula", attester: "node1", use_gpu: false, label: "tuusula_to_node1_cpu" }
+        # - { anchor: "tuusula", attester: "node1", use_gpu: true,  label: "tuusula_to_node1_gpu" }
+        - { anchor: "tuusula", attester: "tuusula", use_gpu: false, label: "tuusula_to_tuusula_cpu" }
+        
+        # Node 1 Local Anchor Tests
+        - { anchor: "node1", attester: "node1", use_gpu: false, label: "node1_to_node1_cpu" }
+        - { anchor: "node1", attester: "node1", use_gpu: true, label: "node1_to_node1_gpu" }
+      when: test_item.attester == inventory_hostname
+      loop_control:
+        loop_var: test_item

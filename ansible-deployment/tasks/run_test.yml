@@ -1,0 +1,26 @@
+---
+- name: "Executing Test: {{ test_item.label }}"
+  vars:
+    anchor_host: "{{ test_item.anchor }}"
+    anchor_info: "{{ hostvars[anchor_host] }}"
+    target_anchor_key: "{{ anchor_info.dynamic_anchor_key | default('') }}"
+    gpu_flag: "{{ '-use-gpu' if test_item.use_gpu else '' }}"
+    home_dir: "/home/{{ ansible_user }}"
+
+  block:
+    - name: Run attester targeting anchor on {{ anchor_host }}
+      shell: |
+        {{ home_dir }}/location-proofs/attester \
+          -anchor {{ anchor_info.ansible_host }}:{{ anchor_info.anchor_port }} \
+          -anchor-key {{ target_anchor_key }} \
+          -interval 100ms \
+          -timeout 200ms \
+          -count {{ measurement_count }} \
+          {{ gpu_flag }} \
+          -json > {{ home_dir }}/location-proofs/measurements_{{ test_item.label }}.json
+
+    - name: Fetch measurements JSON for {{ test_item.label }} back to controller
+      fetch:
+        src: "{{ home_dir }}/location-proofs/measurements_{{ test_item.label }}.json"
+        dest: "./results/"
+        flat: yes
