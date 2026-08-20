@@ -84,20 +84,20 @@
       include_tasks: tasks/run_test.yml
       loop:
         # Falkenstein Anchor Tests
-        # - { anchor: "falkenstein", attester: "falkenstein", use_gpu: false, label: "falk_to_falk_cpu" }
-        # - { anchor: "falkenstein", attester: "node1", use_gpu: false, label: "falk_to_node1_cpu" }
-        # - { anchor: "falkenstein", attester: "node1", use_gpu: true,  label: "falk_to_node1_gpu" }
-        # - { anchor: "falkenstein", attester: "tuusula", use_gpu: false, label: "falk_to_tuusula_cpu" }
+        - { anchor: "falkenstein", attester: "falkenstein", use_gpu: false, label: "falk_to_falk_cpu" }
+        - { anchor: "falkenstein", attester: "node1", use_gpu: false, label: "falk_to_node1_cpu" }
+        - { anchor: "falkenstein", attester: "node1", use_gpu: true,  label: "falk_to_node1_gpu" }
+        - { anchor: "falkenstein", attester: "tuusula", use_gpu: false, label: "falk_to_tuusula_cpu" }
         
         # Tuusula Anchor Tests
         - { anchor: "tuusula", attester: "falkenstein", use_gpu: false, label: "tuusula_to_falk_cpu" }
-        # - { anchor: "tuusula", attester: "node1", use_gpu: false, label: "tuusula_to_node1_cpu" }
-        # - { anchor: "tuusula", attester: "node1", use_gpu: true,  label: "tuusula_to_node1_gpu" }
-        # - { anchor: "tuusula", attester: "tuusula", use_gpu: false, label: "tuusula_to_tuusula_cpu" }
+        - { anchor: "tuusula", attester: "node1", use_gpu: false, label: "tuusula_to_node1_cpu" }
+        - { anchor: "tuusula", attester: "node1", use_gpu: true,  label: "tuusula_to_node1_gpu" }
+        - { anchor: "tuusula", attester: "tuusula", use_gpu: false, label: "tuusula_to_tuusula_cpu" }
         
         # Node 1 Local Anchor Tests
-        # - { anchor: "node1", attester: "node1", use_gpu: false, label: "node1_to_node1_cpu" }
-        # - { anchor: "node1", attester: "node1", use_gpu: true, label: "node1_to_node1_gpu" }
+        - { anchor: "node1", attester: "node1", use_gpu: false, label: "node1_to_node1_cpu" }
+        - { anchor: "node1", attester: "node1", use_gpu: true, label: "node1_to_node1_gpu" }
       when: test_item.attester == inventory_hostname
       loop_control:
         loop_var: test_item
