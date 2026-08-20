@@ -8,7 +8,7 @@
     home_dir: "/home/{{ ansible_user }}"
 
   block:
-    - name: Run attester targeting anchor on {{ anchor_host }}
+    - name: Run attester on {{ inventory_hostname }} targeting anchor {{ anchor_host }}
       shell: |
         {{ home_dir }}/location-proofs/attester \
           -anchor {{ anchor_info.ansible_host }}:{{ anchor_info.anchor_port }} \
