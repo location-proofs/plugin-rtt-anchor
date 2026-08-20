@@ -1,1 +1,3 @@
 Both the anchor and attester executables live in this files/ directory. After being built they must be copied over, otherwise the ansible playbook will not work.
+
+Also, you will need to generate your own ssh keys and send them to each of the IPs listed in the inventory.imi and update the private key location and name so the ansible playbook will firstly be able to find the correct key and then with that key, access the device.
