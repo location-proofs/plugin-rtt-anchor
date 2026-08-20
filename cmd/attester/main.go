@@ -29,6 +29,7 @@ package main
 int init_gpu_memory(int device_id, size_t size_bytes);
 int run_gpu_memory_challenge(int device_id, const uint8_t *challenge_data, size_t challenge_len, uint8_t *out_digest_32);
 void free_gpu_memory(int device_id);
+void set_gpu_logging(int enabled);
 */
 import "C"
 
@@ -207,6 +208,9 @@ func run(log *slog.Logger) error {
 	defer sender.Close()
 	if *verbose {
 		sender.SetLogger(log)
+		C.set_gpu_logging(1) // Enable prints
+	} else {
+		C.set_gpu_logging(0) // Silence GPU prints completely
 	}
 
 	log.Info("attesting",
