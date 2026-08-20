@@ -1,7 +1,7 @@
 Test_Name,Count,Mean_us,Min_us,Bucket_Min_Spread_us,Converged,P99_us
 measurements_falk_to_falk_cpu,1000,216.78,62.11,19.99,True,469.69
-measurements_falk_to_node1_cpu,1000,21239.19,21004.6,58.37,False,23167.26
-measurements_falk_to_node1_gpu,1000,21806.32,21488.48,96.95,False,22671.24
+measurements_falk_to_node1_cpu,1000,21239.19,21004.6,58.37,True,23167.26
+measurements_falk_to_node1_gpu,1000,21806.32,21488.48,96.95,True,22671.24
 measurements_falk_to_tuusula_cpu,1000,25421.19,25146.98,43.28,False,27081.81
 measurements_node1_to_node1_cpu,1000,55.47,42.21,3.82,True,84.49
 measurements_node1_to_node1_gpu,1000,561.21,483.07,29.86,True,749.22
