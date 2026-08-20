@@ -25,14 +25,15 @@ def load_single_measurement_file(filepath):
 
 files_to_load = [
     "../results/measurements_falk_to_falk_cpu.json",
-    "../results/measurements_falk_to_node1_cpu.json",
-    "../results/measurements_falk_to_node1_gpu.json",
-    "../results/measurements_falk_to_tuusula_cpu.json",
     "../results/measurements_node1_to_node1_cpu.json",
+    "../results/measurements_tuusula_to_node1_gpu.json",
+    "../results/measurements_falk_to_node1_cpu.json",
     "../results/measurements_node1_to_node1_gpu.json",
+    "../results/measurements_tuusula_to_tuusula_cpu.json",
+    "../results/measurements_falk_to_node1_gpu.json",
     "../results/measurements_tuusula_to_falk_cpu.json",
-    "../results/measurements_tuusula_to_node1_gpu.json"
-    "../results/measurements_tuusula_to_tuusula_cpu.json"
+    "../results/measurements_falk_to_tuusula_cpu.json",
+    "../results/measurements_tuusula_to_node1_cpu.json"
 ]
 
 master_summary_list = []
@@ -100,6 +101,7 @@ for file_path in files_to_load:
             'Min_us': round(rtt_stats['min'], 2),
             'Bucket_Min_Spread_us': round(min_spread, 2),
             'Converged': is_converged,
+            'P50_us': round(rtt_stats['50%'], 2),
             'P99_us': round(rtt_stats['99%'], 2)
         })
         
