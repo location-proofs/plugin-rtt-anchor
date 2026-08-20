@@ -7,6 +7,7 @@
 static uint64_t *d_vram_buffer = NULL;
 static size_t g_total_elements = 0;
 static size_t g_buffer_size_bytes = 0;
+static int g_enable_logging = 1; // Enabled by default
 
 #define CHECK_CUDA(call)                                          \
     do                                                            \
@@ -18,6 +19,16 @@ static size_t g_buffer_size_bytes = 0;
                     __FILE__, __LINE__, cudaGetErrorString(err)); \
             return -1;                                            \
         }                                                         \
+    } while (0)
+
+// Conditional logging macro
+#define GPU_LOG(...)             \
+    do                           \
+    {                            \
+        if (g_enable_logging)    \
+        {                        \
+            printf(__VA_ARGS__); \
+        }                        \
     } while (0)
 
 // Kernel 1: Fills allocated VRAM buffer with deterministic pseudorandom data
@@ -63,6 +74,11 @@ __global__ void vram_traverse_kernel(
 
 extern "C"
 {
+    // Toggle logging dynamically from Go/C
+    EXPORT void set_gpu_logging(int enabled)
+    {
+        g_enable_logging = enabled;
+    }
 
     EXPORT int init_gpu_memory(int device_id, size_t size_bytes)
     {
@@ -70,15 +86,16 @@ extern "C"
 
         cudaDeviceProp prop;
         CHECK_CUDA(cudaGetDeviceProperties(&prop, device_id));
-        printf("\n======================================================\n");
-        printf("[GPU Init] Device %d: %s\n", device_id, prop.name);
-        printf("[GPU Init] Total Device VRAM: %.2f GB\n", (double)prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
-        printf("[GPU Init] Requested Buffer Size: %.2f GB (%zu bytes)\n",
-               (double)size_bytes / (1024.0 * 1024.0 * 1024.0), size_bytes);
+
+        GPU_LOG("\n======================================================\n");
+        GPU_LOG("[GPU Init] Device %d: %s\n", device_id, prop.name);
+        GPU_LOG("[GPU Init] Total Device VRAM: %.2f GB\n", (double)prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+        GPU_LOG("[GPU Init] Requested Buffer Size: %.2f GB (%zu bytes)\n",
+                (double)size_bytes / (1024.0 * 1024.0 * 1024.0), size_bytes);
 
         if (d_vram_buffer != NULL)
         {
-            printf("[GPU Init] Freeing previously allocated VRAM buffer...\n");
+            GPU_LOG("[GPU Init] Freeing previously allocated VRAM buffer...\n");
             cudaFree(d_vram_buffer);
             d_vram_buffer = NULL;
         }
@@ -86,12 +103,12 @@ extern "C"
         g_buffer_size_bytes = size_bytes;
         g_total_elements = size_bytes / sizeof(uint64_t);
 
-        printf("[GPU Init] Allocating %.2f GB buffer on GPU...\n", (double)size_bytes / (1024.0 * 1024.0 * 1024.0));
+        GPU_LOG("[GPU Init] Allocating %.2f GB buffer on GPU...\n", (double)size_bytes / (1024.0 * 1024.0 * 1024.0));
         CHECK_CUDA(cudaMalloc((void **)&d_vram_buffer, size_bytes));
 
         int threads = 256;
         int blocks = 1024;
-        printf("[GPU Init] Populating %zu uint64 elements with pseudo-random seed...\n", g_total_elements);
+        GPU_LOG("[GPU Init] Populating %zu uint64 elements with pseudo-random seed...\n", g_total_elements);
 
         cudaEvent_t start, stop;
         CHECK_CUDA(cudaEventCreate(&start));
@@ -104,8 +121,8 @@ extern "C"
 
         float elapsed_ms = 0.0f;
         CHECK_CUDA(cudaEventElapsedTime(&elapsed_ms, start, stop));
-        printf("[GPU Init] Memory initialization completed in %.2f ms\n", elapsed_ms);
-        printf("======================================================\n\n");
+        GPU_LOG("[GPU Init] Memory initialization completed in %.2f ms\n", elapsed_ms);
+        GPU_LOG("======================================================\n\n");
 
         cudaEventDestroy(start);
         cudaEventDestroy(stop);
@@ -125,40 +142,40 @@ extern "C"
             return -1;
         }
 
-        printf("\n------------------------------------------------------\n");
-        printf("[GPU Challenge] Received challenge input (%zu bytes): ", challenge_len);
-        for (size_t i = 0; i < (challenge_len < 16 ? challenge_len : 16); ++i)
+        GPU_LOG("\n------------------------------------------------------\n");
+        GPU_LOG("[GPU Challenge] Received challenge input (%zu bytes): ", challenge_len);
+        if (g_enable_logging)
         {
-            printf("%02x ", challenge_data[i]);
+            for (size_t i = 0; i < (challenge_len < 16 ? challenge_len : 16); ++i)
+            {
+                printf("%02x ", challenge_data[i]);
+            }
+            if (challenge_len > 16)
+                printf("...");
+            printf("\n");
         }
-        if (challenge_len > 16)
-            printf("...");
-        printf("\n");
 
-        // 1. Fold challenge bytes into a 64-bit seed using FNV-1a
         uint64_t seed = 0xCBF29CE484222325ULL;
         for (size_t i = 0; i < challenge_len; ++i)
         {
             seed ^= (uint64_t)challenge_data[i];
             seed *= 0x100000001B3ULL;
         }
-        printf("[GPU Challenge] Computed initial seed: 0x%016llx\n", (unsigned long long)seed);
+        GPU_LOG("[GPU Challenge] Computed initial seed: 0x%016llx\n", (unsigned long long)seed);
 
-        // 2. Configure launch dimensions
         const int threads = 256;
         const int blocks = 512;
-        const int total_threads = threads * blocks; // 131,072 concurrent threads
+        const int total_threads = threads * blocks;
         const uint32_t iterations = 1024;
         const size_t total_lookups = (size_t)total_threads * (size_t)iterations;
         const double total_data_read_gb = (double)(total_lookups * sizeof(uint64_t)) / (1024.0 * 1024.0 * 1024.0);
 
-        printf("[GPU Challenge] Launching %d blocks x %d threads (%d parallel threads)\n", blocks, threads, total_threads);
-        printf("[GPU Challenge] Total random VRAM reads: %zu (%.2f GB non-cached traffic)\n", total_lookups, total_data_read_gb);
+        GPU_LOG("[GPU Challenge] Launching %d blocks x %d threads (%d parallel threads)\n", blocks, threads, total_threads);
+        GPU_LOG("[GPU Challenge] Total random VRAM reads: %zu (%.2f GB non-cached traffic)\n", total_lookups, total_data_read_gb);
 
         uint64_t *d_results = NULL;
         CHECK_CUDA(cudaMalloc((void **)&d_results, total_threads * sizeof(uint64_t)));
 
-        // 3. Measure kernel execution latency with hardware events
         cudaEvent_t start, stop;
         CHECK_CUDA(cudaEventCreate(&start));
         CHECK_CUDA(cudaEventCreate(&stop));
@@ -172,10 +189,9 @@ extern "C"
         CHECK_CUDA(cudaEventElapsedTime(&kernel_ms, start, stop));
 
         double effective_bandwidth = (total_data_read_gb / (kernel_ms / 1000.0));
-        printf("[GPU Challenge] Kernel execution time: %.3f ms (Effective bandwidth: %.2f GB/s)\n",
-               kernel_ms, effective_bandwidth);
+        GPU_LOG("[GPU Challenge] Kernel execution time: %.3f ms (Effective bandwidth: %.2f GB/s)\n",
+                kernel_ms, effective_bandwidth);
 
-        // 4. Retrieve thread results and reduce on host
         uint64_t *h_results = (uint64_t *)malloc(total_threads * sizeof(uint64_t));
         if (!h_results)
         {
@@ -197,12 +213,16 @@ extern "C"
 
         memcpy(out_digest_32, digest, 32);
 
-        printf("[GPU Challenge] Produced 32-byte proof digest: ");
-        for (int i = 0; i < 32; ++i)
+        GPU_LOG("[GPU Challenge] Produced 32-byte proof digest: ");
+        if (g_enable_logging)
         {
-            printf("%02x", out_digest_32[i]);
+            for (int i = 0; i < 32; ++i)
+            {
+                printf("%02x", out_digest_32[i]);
+            }
+            printf("\n");
         }
-        printf("\n------------------------------------------------------\n\n");
+        GPU_LOG("------------------------------------------------------\n\n");
 
         cudaEventDestroy(start);
         cudaEventDestroy(stop);
@@ -214,13 +234,12 @@ extern "C"
         cudaSetDevice(device_id);
         if (d_vram_buffer != NULL)
         {
-            printf("[GPU Cleanup] Freeing %.2f GB VRAM on Device %d\n",
-                   (double)g_buffer_size_bytes / (1024.0 * 1024.0 * 1024.0), device_id);
+            GPU_LOG("[GPU Cleanup] Freeing %.2f GB VRAM on Device %d\n",
+                    (double)g_buffer_size_bytes / (1024.0 * 1024.0 * 1024.0), device_id);
             cudaFree(d_vram_buffer);
             d_vram_buffer = NULL;
             g_total_elements = 0;
             g_buffer_size_bytes = 0;
         }
     }
-
-} // extern "C"
+}
