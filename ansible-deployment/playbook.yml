@@ -70,6 +70,8 @@
       set_fact:
         dynamic_anchor_key: "{{ extracted_key.stdout | trim }}"
 
+
+
 # ==========================================
 # EXECUTE TEST MATRIX DIRECTLY
 # ==========================================
@@ -78,26 +80,63 @@
   gather_facts: no
   vars:
     measurement_count: 1000
+    results_dir: "./results_{{ hostvars['localhost']['run_timestamp'] }}"
+
+  pre_tasks:    
+    - name: Capture one timestamp for the entire test run      
+      ansible.builtin.set_fact:        
+        run_timestamp: "{{ now(utc=true, fmt='%Y%m%d_%H%M%S') }}"      
+      delegate_to: localhost      
+      delegate_facts: true      
+      run_once: true
 
   tasks:
     - name: Run test matrix combinations
       include_tasks: tasks/run_test.yml
       loop:
         # Falkenstein Anchor Tests
-        - { anchor: "falkenstein", attester: "falkenstein", use_gpu: false, label: "falk_to_falk_cpu" }
-        - { anchor: "falkenstein", attester: "node1", use_gpu: false, label: "falk_to_node1_cpu" }
-        - { anchor: "falkenstein", attester: "node1", use_gpu: true,  label: "falk_to_node1_gpu" }
-        - { anchor: "falkenstein", attester: "tuusula", use_gpu: false, label: "falk_to_tuusula_cpu" }
+        - { anchor: "falkenstein", attester: "falkenstein", use_gpu: false, label: "falk_to_falk_cpu", interval_att: "50ms", timeout_att: "100ms"  }
+        - { anchor: "falkenstein", attester: "falkenstein", use_gpu: false, label: "falk_to_falk_cpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "falkenstein", attester: "falkenstein", use_gpu: false, label: "falk_to_falk_cpu", interval_att: "200ms", timeout_att: "400ms" }
         
-        # Tuusula Anchor Tests
-        - { anchor: "tuusula", attester: "falkenstein", use_gpu: false, label: "tuusula_to_falk_cpu" }
-        - { anchor: "tuusula", attester: "node1", use_gpu: false, label: "tuusula_to_node1_cpu" }
-        - { anchor: "tuusula", attester: "node1", use_gpu: true,  label: "tuusula_to_node1_gpu" }
-        - { anchor: "tuusula", attester: "tuusula", use_gpu: false, label: "tuusula_to_tuusula_cpu" }
+        - { anchor: "falkenstein", attester: "node1", use_gpu: false, label: "falk_to_node1_cpu", interval_att: "50ms", timeout_att: "100ms"  }
+        - { anchor: "falkenstein", attester: "node1", use_gpu: false, label: "falk_to_node1_cpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "falkenstein", attester: "node1", use_gpu: false, label: "falk_to_node1_cpu", interval_att: "200ms", timeout_att: "400ms" }
         
-        # Node 1 Local Anchor Tests
-        - { anchor: "node1", attester: "node1", use_gpu: false, label: "node1_to_node1_cpu" }
-        - { anchor: "node1", attester: "node1", use_gpu: true, label: "node1_to_node1_gpu" }
+        - { anchor: "falkenstein", attester: "node1", use_gpu: true,  label: "falk_to_node1_gpu", interval_att: "50ms", timeout_att: "100ms" }
+        - { anchor: "falkenstein", attester: "node1", use_gpu: true,  label: "falk_to_node1_gpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "falkenstein", attester: "node1", use_gpu: true,  label: "falk_to_node1_gpu", interval_att: "200ms", timeout_att: "400ms" }
+
+        - { anchor: "falkenstein", attester: "tuusula", use_gpu: false, label: "falk_to_tuusula_cpu", interval_att: "50ms", timeout_att: "100ms"  }
+        - { anchor: "falkenstein", attester: "tuusula", use_gpu: false, label: "falk_to_tuusula_cpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "falkenstein", attester: "tuusula", use_gpu: false, label: "falk_to_tuusula_cpu", interval_att: "200ms", timeout_att: "400ms" }
+        
+        # # Tuusula Anchor Tests
+        - { anchor: "tuusula", attester: "falkenstein", use_gpu: false, label: "tuusula_to_falk_cpu", interval_att: "50ms", timeout_att: "100ms" }
+        - { anchor: "tuusula", attester: "falkenstein", use_gpu: false, label: "tuusula_to_falk_cpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "tuusula", attester: "falkenstein", use_gpu: false, label: "tuusula_to_falk_cpu", interval_att: "200ms", timeout_att: "400ms" }
+
+        - { anchor: "tuusula", attester: "node1", use_gpu: false, label: "tuusula_to_node1_cpu", interval_att: "50ms", timeout_att: "100ms" }
+        - { anchor: "tuusula", attester: "node1", use_gpu: false, label: "tuusula_to_node1_cpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "tuusula", attester: "node1", use_gpu: false, label: "tuusula_to_node1_cpu", interval_att: "200ms", timeout_att: "400ms" }
+
+        - { anchor: "tuusula", attester: "node1", use_gpu: true,  label: "tuusula_to_node1_gpu", interval_att: "50ms", timeout_att: "100ms" }
+        - { anchor: "tuusula", attester: "node1", use_gpu: true,  label: "tuusula_to_node1_gpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "tuusula", attester: "node1", use_gpu: true,  label: "tuusula_to_node1_gpu", interval_att: "200ms", timeout_att: "400ms" }
+
+        - { anchor: "tuusula", attester: "tuusula", use_gpu: false, label: "tuusula_to_tuusula_cpu", interval_att: "50ms", timeout_att: "100ms" }
+        - { anchor: "tuusula", attester: "tuusula", use_gpu: false, label: "tuusula_to_tuusula_cpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "tuusula", attester: "tuusula", use_gpu: false, label: "tuusula_to_tuusula_cpu", interval_att: "200ms", timeout_att: "400ms" }
+
+        # # Node 1 Local Anchor Tests
+        - { anchor: "node1", attester: "node1", use_gpu: false, label: "node1_to_node1_cpu", interval_att: "50ms", timeout_att: "100ms" }
+        - { anchor: "node1", attester: "node1", use_gpu: false, label: "node1_to_node1_cpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "node1", attester: "node1", use_gpu: false, label: "node1_to_node1_cpu", interval_att: "200ms", timeout_att: "400ms" }
+
+        - { anchor: "node1", attester: "node1", use_gpu: true, label: "node1_to_node1_gpu", interval_att: "50ms", timeout_att: "100ms" }
+        - { anchor: "node1", attester: "node1", use_gpu: true, label: "node1_to_node1_gpu", interval_att: "100ms", timeout_att: "200ms" }
+        - { anchor: "node1", attester: "node1", use_gpu: true, label: "node1_to_node1_gpu", interval_att: "200ms", timeout_att: "400ms" }
+
       when: test_item.attester == inventory_hostname
       loop_control:
         loop_var: test_item

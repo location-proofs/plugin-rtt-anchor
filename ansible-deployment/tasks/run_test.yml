@@ -6,6 +6,9 @@
     target_anchor_key: "{{ anchor_info.dynamic_anchor_key | default('') }}"
     gpu_flag: "{{ '-use-gpu' if test_item.use_gpu else '' }}"
     home_dir: "/home/{{ ansible_user }}"
+    interval_att: "{{ test_item.interval_att | default('100ms') }}"
+    timeout_att: "{{ test_item.timeout_att | default('200ms') }}"
+    results_dir: "./results_{{ hostvars['localhost']['run_timestamp'] }}"
 
   block:
     - name: Run attester on {{ inventory_hostname }} targeting anchor {{ anchor_host }}
@@ -13,14 +16,39 @@
         {{ home_dir }}/location-proofs/attester \
           -anchor {{ anchor_info.ansible_host }}:{{ anchor_info.anchor_port }} \
           -anchor-key {{ target_anchor_key }} \
-          -interval 200ms \
-          -timeout 400ms \
+          -interval {{ interval_att }} \
+          -timeout {{ timeout_att }} \
           -count {{ measurement_count }} \
           {{ gpu_flag }} \
-          -json > {{ home_dir }}/location-proofs/measurements_{{ test_item.label }}.json
+          -json > {{ home_dir }}/location-proofs/measurements_{{ test_item.label }}_interval_{{ test_item.interval_att }}_timeout_{{ test_item.timeout_att }}.json
 
     - name: Fetch measurements JSON for {{ test_item.label }} back to controller
       fetch:
-        src: "{{ home_dir }}/location-proofs/measurements_{{ test_item.label }}.json"
-        dest: "./results/"
+        src: "{{ home_dir }}/location-proofs/measurements_{{ test_item.label }}_interval_{{ test_item.interval_att }}_timeout_{{ test_item.timeout_att }}.json"
+        dest: "{{ results_dir }}/"
         flat: yes
+
+    - name: Add README to results directory
+      ansible.builtin.copy:
+        dest: "{{ results_dir }}/README.md"
+        content: |
+          # Test Results
+
+          ## Test
+          Label: {{ test_item.label }}
+
+          ## Hosts
+          Attester: {{ inventory_hostname }}
+          Anchor: {{ anchor_host }}
+          Anchor address: {{ anchor_info.ansible_host }}:{{ anchor_info.anchor_port }}
+
+          ## Attester settings
+          GPU enabled: {{ test_item.use_gpu }}
+          Interval: {{ interval_att }}
+          Timeout: {{ timeout_att }}
+          Measurement count: {{ measurement_count }}
+
+          ## Run
+          Timestamp: {{ hostvars['localhost']['run_timestamp'] }}
+        mode: "0644"
+      delegate_to: localhost
