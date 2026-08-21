@@ -23,9 +23,44 @@ def load_single_measurement_file(filepath):
                     continue
     return pd.DataFrame(data_rows)
 
+def parse_filename_metadata(stem):
+    """
+    Parses filenames like 'measurements_falk_to_node1_gpu' or 'measurements_tuusula_to_tuusula_cpu'
+    into human-readable Anchor, Attester, and Mode fields including their proper labels and IPs.
+    """
+    # Remove prefix if present
+    name = stem.replace("measurements_", "")
+    
+    # Determine mode (cpu vs gpu)
+    mode = "CPU"
+    if name.endswith("_gpu"):
+        mode = "GPU"
+        name = name[:-4]
+    elif name.endswith("_cpu"):
+        mode = "CPU"
+        name = name[:-4]
+        
+    # Split by 'to'
+    parts = name.split("_to_")
+    if len(parts) == 2:
+        raw_anchor, raw_attester = parts
+    else:
+        raw_anchor, raw_attester = "Unknown", "Unknown"
+        
+    # Map node identifiers to clean names with labels and IPs matching your format
+    node_mapping = {
+        "falk": "Falkenstein 49.13.51.115",
+        "node1": "Cambridge Node 1: 192.168.80.80",
+        "tuusula": "Tuusula: 37.27.88.255"
+    }
+    
+    anchor_name = node_mapping.get(raw_anchor.lower(), raw_anchor)
+    attester_name = node_mapping.get(raw_attester.lower(), raw_attester)
+    
+    return anchor_name, attester_name, mode
+
 # --- DYNAMIC DIRECTORY LOADING ---
-results_dir = Path("../results_20260821_125449")
-# This finds all json files matching your naming pattern in the directory
+results_dir = Path("../results_20260821_104000")
 files_to_load = sorted(list(results_dir.glob("measurements_*.json")))
 
 if not files_to_load:
@@ -51,14 +86,9 @@ for file_path in files_to_load:
             df['anchor_measured_rtt_us'] = df['anchor_measured_rtt_ns'] / 1_000
             
         # --- ENHANCED CONVERGENCE & FLOOR VALIDATION CHECK ---
-        # Step A: Drop warm-up/burn-in packets (e.g., first 30 samples)
         warmup_cutoff = 30
-        if len(df) > warmup_cutoff:
-            df_eval = df.iloc[warmup_cutoff:].copy()
-        else:
-            df_eval = df.copy()
+        df_eval = df.iloc[warmup_cutoff:].copy() if len(df) > warmup_cutoff else df.copy()
 
-        # Step B: Bucket into 10 chunks for spread analysis
         num_buckets = 10
         rtt_values = df_eval['anchor_measured_rtt_us'].values
         chunks = np.array_split(rtt_values, num_buckets)
@@ -66,7 +96,6 @@ for file_path in files_to_load:
         
         min_spread = max(bucket_mins) - min(bucket_mins) if bucket_mins else 0.0
         
-        # Step C: Expanding minimum trailing slope analysis (checking if floor dropped in the final 10%)
         df['running_min_us'] = df['anchor_measured_rtt_us'].expanding().min()
         split_idx = int(len(df) * 0.9)
         floor_stable_at_end = True
@@ -74,14 +103,10 @@ for file_path in files_to_load:
             early_min = df['running_min_us'].iloc[split_idx]
             final_min = df['running_min_us'].iloc[-1]
             if final_min < early_min:
-                floor_stable_at_end = False # Minimum dropped late in the run
+                floor_stable_at_end = False
 
-        # Step D: Adaptive / Robust Tolerance Check
         tolerance_us = 100
         is_converged = (min_spread <= tolerance_us) and floor_stable_at_end
-        
-        print(f"-> Bucket Mins (µs): {[round(m, 2) for m in bucket_mins]}")
-        print(f"-> Bucket Min Spread: {round(min_spread, 2)} µs | Late Drop Check: {'Passed' if floor_stable_at_end else 'Failed'} | Floor Convergence: {'PASSED (Stable)' if is_converged else 'CHECK (High Variance/Late Drop)'}")
 
         # 2. Key Statistics Summary
         percentiles_list = [0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
@@ -91,15 +116,27 @@ for file_path in files_to_load:
         summary.to_csv(f"summary_{stem_name}.csv")
         
         rtt_stats = summary['anchor_measured_rtt_us']
+        count = int(rtt_stats['count'])
+        mean_val = round(rtt_stats['mean'], 2)
+        min_val = round(rtt_stats['min'], 2)
+        p50_val = round(rtt_stats['50%'], 2)
+        p99_val = round(rtt_stats['99%'], 2)
+        p99_minus_min = round(p99_val - min_val, 2)
+        
+        anchor_lbl, attester_lbl, mode_lbl = parse_filename_metadata(stem_name)
+
         master_summary_list.append({
-            'Test_Name': stem_name,
-            'Count': int(rtt_stats['count']),
-            'Mean_us': round(rtt_stats['mean'], 2),
-            'Min_us': round(rtt_stats['min'], 2),
-            'Bucket_Min_Spread_us': round(min_spread, 2),
+            'Anchor': anchor_lbl,
+            'Attester': attester_lbl,
+            'CPU/GPU': mode_lbl,
+            'Count': count,
+            'Mean us': mean_val,
+            'Min us': min_val,
+            'Min Spread us': round(min_spread, 2),
             'Converged': is_converged,
-            'P50_us': round(rtt_stats['50%'], 2),
-            'P99_us': round(rtt_stats['99%'], 2)
+            '50th Percentile us': p50_val,
+            '99th Percentile us': p99_val,
+            'p99 - min': p99_minus_min
         })
         
         # 3. Plotting
@@ -126,11 +163,20 @@ for file_path in files_to_load:
     except Exception as e:
         print(f"Error processing {file_path.name}: {e}")
 
-# Export master sheet with convergence validation column
+# Export master sheet with exact column layout
 if master_summary_list:
     master_df = pd.DataFrame(master_summary_list)
+    
+    # Reorder columns explicitly to match your layout requirement
+    desired_columns = [
+        'Anchor', 'Attester', 'CPU/GPU', 'Count', 'Mean us', 
+        'Min us', 'Min Spread us', 'Converged', 
+        '50th Percentile us', '99th Percentile us', 'p99 - min'
+    ]
+    master_df = master_df[desired_columns]
+    
     master_df.to_csv("master_rtt_comparison_table.csv", index=False)
-    print("\n" + "="*70)
+    print("\n" + "="*100)
     print("Master Table with Enhanced Convergence Results:")
-    print("="*70)
+    print("="*100)
     print(master_df.to_string(index=False))
