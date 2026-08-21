@@ -23,24 +23,21 @@ def load_single_measurement_file(filepath):
                     continue
     return pd.DataFrame(data_rows)
 
-files_to_load = [
-    "../results/measurements_falk_to_falk_cpu.json",
-    "../results/measurements_node1_to_node1_cpu.json",
-    "../results/measurements_tuusula_to_node1_gpu.json",
-    "../results/measurements_falk_to_node1_cpu.json",
-    "../results/measurements_node1_to_node1_gpu.json",
-    "../results/measurements_tuusula_to_tuusula_cpu.json",
-    "../results/measurements_falk_to_node1_gpu.json",
-    "../results/measurements_tuusula_to_falk_cpu.json",
-    "../results/measurements_falk_to_tuusula_cpu.json",
-    "../results/measurements_tuusula_to_node1_cpu.json"
-]
+# --- DYNAMIC DIRECTORY LOADING ---
+results_dir = Path("../results_20260821_125449")
+# This finds all json files matching your naming pattern in the directory
+files_to_load = sorted(list(results_dir.glob("measurements_*.json")))
+
+if not files_to_load:
+    print(f"No measurement files found in {results_dir.absolute()}")
+else:
+    print(f"Found {len(files_to_load)} measurement files to process.")
 
 master_summary_list = []
 
 for file_path in files_to_load:
     try:
-        print(f"\nProcessing: {file_path}")
+        print(f"\nProcessing: {file_path.name}")
         df = load_single_measurement_file(file_path)
         
         if df.empty:
@@ -54,7 +51,7 @@ for file_path in files_to_load:
             df['anchor_measured_rtt_us'] = df['anchor_measured_rtt_ns'] / 1_000
             
         # --- ENHANCED CONVERGENCE & FLOOR VALIDATION CHECK ---
-        # Step A: Drop warm-up/burn-in burn packets (e.g., first 30 samples)
+        # Step A: Drop warm-up/burn-in packets (e.g., first 30 samples)
         warmup_cutoff = 30
         if len(df) > warmup_cutoff:
             df_eval = df.iloc[warmup_cutoff:].copy()
@@ -90,7 +87,7 @@ for file_path in files_to_load:
         percentiles_list = [0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
         summary = df[['anchor_measured_rtt_us', 'calibrated_distance_m']].describe(percentiles=percentiles_list)
         
-        stem_name = Path(file_path).stem
+        stem_name = file_path.stem
         summary.to_csv(f"summary_{stem_name}.csv")
         
         rtt_stats = summary['anchor_measured_rtt_us']
@@ -127,7 +124,7 @@ for file_path in files_to_load:
         plt.close(fig)
 
     except Exception as e:
-        print(f"Error processing {file_path}: {e}")
+        print(f"Error processing {file_path.name}: {e}")
 
 # Export master sheet with convergence validation column
 if master_summary_list:
